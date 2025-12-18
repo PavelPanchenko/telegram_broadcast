@@ -9,8 +9,21 @@ export function useTokens() {
       const response = await fetch('/api/tokens', {
         credentials: 'include',
       });
-      return parseJsonResponse(response);
+      
+      // Если 401, возвращаем пустой массив вместо ошибки
+      if (response.status === 401) {
+        return [];
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch tokens: ${response.status}`);
+      }
+      
+      const data = await parseJsonResponse(response);
+      // Убеждаемся, что возвращаем массив
+      return Array.isArray(data) ? data : [];
     },
+    retry: false, // Не повторяем запрос при 401
   });
 }
 

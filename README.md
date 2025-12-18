@@ -233,6 +233,8 @@ _italic_
    ```env
    TELEGRAM_BOT_TOKEN=your_bot_token_here
    SESSION_SECRET=your_random_secret_key_here
+   # Для HTTP (без HTTPS) установите false, для HTTPS - true
+   COOKIE_SECURE=false
    ```
 
 5. **Создайте необходимые директории:**

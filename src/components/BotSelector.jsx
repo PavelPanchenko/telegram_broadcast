@@ -55,6 +55,11 @@ function BotSelector({ onBotChange, onTokensChange }) {
   }, [selectedToken, onBotChange]);
 
   useEffect(() => {
+    // Проверяем, что tokens - это массив
+    if (!Array.isArray(tokens)) {
+      return;
+    }
+    
     const saved = localStorage.getItem('selectedBotToken');
     if (saved && tokens.find(t => t.id === saved)) {
       setSelectedToken(saved);
@@ -108,6 +113,9 @@ function BotSelector({ onBotChange, onTokensChange }) {
   };
 
   const handleDeleteClick = (id) => {
+    if (!Array.isArray(tokens)) {
+      return;
+    }
     const token = tokens.find(t => t.id === id);
     setTokenToDelete({ id, name: token?.name || 'бота' });
     setShowDeleteConfirm(true);
@@ -149,7 +157,7 @@ function BotSelector({ onBotChange, onTokensChange }) {
     );
   }
 
-  const currentToken = tokens.find(t => t.id === selectedToken);
+  const currentToken = Array.isArray(tokens) ? tokens.find(t => t.id === selectedToken) : null;
 
   return (
     <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-4 mb-4 sm:mb-6">
@@ -220,7 +228,7 @@ function BotSelector({ onBotChange, onTokensChange }) {
           style={{
             WebkitOverflowScrolling: 'touch'
           }}>
-          {tokens.map((token) => (
+          {Array.isArray(tokens) && tokens.map((token) => (
             <div
               key={token.id}
               className={`flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 rounded-lg border-2 flex-shrink-0 w-[calc(100vw-3rem)] sm:min-w-[220px] sm:max-w-[280px] transition-all ${

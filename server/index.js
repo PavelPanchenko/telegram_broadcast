@@ -27,14 +27,18 @@ const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/quicktime'];
 const ALLOWED_DOC_TYPES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 
 // Настройка сессий
+// secure: true только если явно указано в переменных окружения или используется HTTPS
+const isSecure = process.env.COOKIE_SECURE === 'true' || 
+                 (process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false');
 app.use(session({
   secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: isSecure,
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 часа
+    maxAge: 24 * 60 * 60 * 1000, // 24 часа
+    sameSite: 'lax' // Помогает с CORS и cookie в разных сценариях
   }
 }));
 

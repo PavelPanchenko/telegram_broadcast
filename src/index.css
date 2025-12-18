@@ -9,5 +9,95 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  @apply bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-50;
+}
+
+/* Улучшенные цвета для темной темы */
+.dark {
+  color-scheme: dark;
+}
+
+/* Более контрастные границы и фокус в темной теме */
+.dark input,
+.dark textarea,
+.dark select {
+  @apply border-slate-700 bg-slate-800/50;
+}
+
+.dark input:focus,
+.dark textarea:focus,
+.dark select:focus {
+  @apply border-blue-500 ring-blue-500/20 bg-slate-800;
+}
+
+/* Улучшенные цвета для кнопок в темной теме */
+.dark button[class*="bg-blue"] {
+  @apply bg-blue-600 hover:bg-blue-500 active:bg-blue-700;
+}
+
+.dark button[class*="bg-green"] {
+  @apply bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700;
+}
+
+.dark button[class*="bg-red"] {
+  @apply bg-rose-600 hover:bg-rose-500 active:bg-rose-700;
+}
+
+/* Скрытие скроллбара для горизонтальной прокрутки */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Тонкий скроллбар для горизонтальной прокрутки ботов */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(209 213 219) transparent; /* gray-300 */
+}
+
+.dark .scrollbar-thin {
+  scrollbar-color: rgb(75 85 99) transparent; /* gray-600 */
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgb(209 213 219); /* gray-300 */
+  border-radius: 3px;
+}
+
+.dark .scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgb(75 85 99); /* gray-600 */
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(156 163 175); /* gray-400 */
+}
+
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(107 114 128); /* gray-500 */
+}
+
+/* Улучшения для мобильных устройств */
+@media (max-width: 640px) {
+  /* Уменьшаем отступы в модальных окнах */
+  .modal-content {
+    @apply p-4;
+  }
+  
+  /* Улучшаем кнопки на мобильных */
+  button {
+    @apply min-h-[44px];
+  }
 }
 

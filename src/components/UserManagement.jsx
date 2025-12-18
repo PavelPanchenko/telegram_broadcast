@@ -18,7 +18,7 @@ function UserManagement({ currentUser }) {
     username: '',
     password: '',
     name: '',
-    role: 'user'
+    role: currentUser?.role === 'admin' ? 'user' : 'assistant'
   });
 
   // Форма смены пароля
@@ -66,20 +66,31 @@ function UserManagement({ currentUser }) {
     }
 
     try {
+      // Если создаем помощника, добавляем ownerId
+      const userData = { ...newUser };
+      if (userData.role === 'assistant' && currentUser?.role === 'user') {
+        userData.ownerId = currentUser.id;
+      }
+
       const response = await fetch('/api/users', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify(newUser),
+        body: JSON.stringify(userData),
       });
 
       const data = await parseJsonResponse(response);
 
       if (response.ok) {
         setSuccess('Пользователь успешно добавлен');
-        setNewUser({ username: '', password: '', name: '', role: 'user' });
+        setNewUser({ 
+          username: '', 
+          password: '', 
+          name: '', 
+          role: currentUser?.role === 'admin' ? 'user' : 'assistant' 
+        });
         setShowAddForm(false);
         fetchUsers();
       } else {
@@ -91,7 +102,6 @@ function UserManagement({ currentUser }) {
   };
 
   const handleDeleteClick = (user) => {
-    console.log('[UserManagement] Delete button clicked for user:', user.id, user.username);
     setUserToDelete(user);
   };
 
@@ -99,27 +109,19 @@ function UserManagement({ currentUser }) {
     if (!userToDelete) return;
 
     const userId = userToDelete.id;
-    console.log('[UserManagement] handleDeleteConfirm called with userId:', userId);
     
     setError('');
     setSuccess('');
 
     try {
-      console.log('[UserManagement] Deleting user with id:', userId);
       const encodedId = encodeURIComponent(userId);
-      console.log('[UserManagement] Encoded id:', encodedId);
-      console.log('[UserManagement] URL:', `/api/users/${encodedId}`);
       
       const response = await fetch(`/api/users/${encodedId}`, {
         method: 'DELETE',
         credentials: 'include',
       });
 
-      console.log('[UserManagement] Response status:', response.status);
-      console.log('[UserManagement] Response ok:', response.ok);
-
       const data = await parseJsonResponse(response);
-      console.log('[UserManagement] Response data:', data);
 
       if (response.ok) {
         setSuccess('Пользователь успешно удален');
@@ -184,77 +186,81 @@ function UserManagement({ currentUser }) {
   };
 
   if (loading) {
-    return <p className="text-gray-500">Загрузка...</p>;
+    return <p className="text-gray-500 dark:text-gray-400">Загрузка...</p>;
   }
 
-  if (currentUser?.role !== 'admin') {
+  // Assistant не может управлять пользователями
+  if (currentUser?.role === 'assistant') {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">
+      <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-6">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-3 sm:mb-4">
           Управление пользователями
         </h2>
-        <p className="text-gray-500">Доступно только администраторам</p>
+        <p className="text-gray-500 dark:text-gray-400">Доступ ограничен</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-900">
-          Управление пользователями
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 mb-3 sm:mb-4">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white">
+          {currentUser?.role === 'admin' ? 'Управление пользователями' : 'Управление помощниками'}
         </h2>
         <button
+          type="button"
           onClick={() => setShowAddForm(!showAddForm)}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 whitespace-nowrap w-full sm:w-auto"
         >
-          {showAddForm ? 'Отмена' : '+ Добавить пользователя'}
+          {showAddForm ? 'Отмена' : currentUser?.role === 'admin' ? '+ Добавить пользователя' : '+ Добавить помощника'}
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded">
+        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 rounded">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded">
+        <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 rounded">
           {success}
         </div>
       )}
 
       {/* Форма добавления пользователя */}
       {showAddForm && (
-        <form onSubmit={handleAddUser} className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Добавить пользователя</h3>
+        <form onSubmit={handleAddUser} className="mb-6 p-4 bg-gray-50 dark:bg-slate-800/60 rounded-lg border dark:border-slate-700/50">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+            {currentUser?.role === 'admin' ? 'Добавить пользователя' : 'Добавить помощника'}
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Имя пользователя
               </label>
               <input
                 type="text"
                 value={newUser.username}
                 onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
                 required
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Имя (отображаемое)
               </label>
               <input
                 type="text"
                 value={newUser.name}
                 onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
                 required
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Пароль
               </label>
               <div className="relative">
@@ -262,14 +268,14 @@ function UserManagement({ currentUser }) {
                   type={showPassword ? 'text' : 'password'}
                   value={newUser.password}
                   onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md"
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   required
                   minLength={4}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
                   tabIndex={-1}
                 >
                   {showPassword ? (
@@ -285,23 +291,33 @@ function UserManagement({ currentUser }) {
                 </button>
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Роль
-              </label>
-              <select
-                value={newUser.role}
-                onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              >
-                <option value="user">Пользователь</option>
-                <option value="admin">Администратор</option>
-              </select>
-            </div>
+            {currentUser?.role === 'admin' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Роль
+                </label>
+                <select
+                  value={newUser.role}
+                  onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
+                >
+                  <option value="user">Пользователь</option>
+                  <option value="admin">Администратор</option>
+                  <option value="assistant">Помощник</option>
+                </select>
+              </div>
+            )}
+            {currentUser?.role === 'user' && (
+              <div className="md:col-span-2">
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Вы создаете помощника, который будет иметь доступ к вашим ботам и каналам.
+                </p>
+              </div>
+            )}
           </div>
           <button
             type="submit"
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="mt-4 px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
           >
             Добавить
           </button>
@@ -310,11 +326,11 @@ function UserManagement({ currentUser }) {
 
       {/* Форма смены пароля */}
       {showChangePassword === currentUser.id && (
-        <form onSubmit={handleChangePassword} className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Изменить пароль</h3>
+        <form onSubmit={handleChangePassword} className="mb-4 sm:mb-6 p-3 sm:p-4 bg-gray-50 dark:bg-slate-800/60 rounded-lg border dark:border-slate-700/50">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Изменить пароль</h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Текущий пароль
               </label>
               <div className="relative">
@@ -322,13 +338,13 @@ function UserManagement({ currentUser }) {
                   type={showPassword ? 'text' : 'password'}
                   value={passwordData.currentPassword}
                   onChange={(e) => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md"
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
                   tabIndex={-1}
                 >
                   {showPassword ? (
@@ -345,7 +361,7 @@ function UserManagement({ currentUser }) {
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Новый пароль
               </label>
               <div className="relative">
@@ -353,14 +369,14 @@ function UserManagement({ currentUser }) {
                   type={showNewPassword ? 'text' : 'password'}
                   value={passwordData.newPassword}
                   onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md"
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   required
                   minLength={4}
                 />
                 <button
                   type="button"
                   onClick={() => setShowNewPassword(!showNewPassword)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
                   tabIndex={-1}
                 >
                   {showNewPassword ? (
@@ -377,7 +393,7 @@ function UserManagement({ currentUser }) {
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Подтвердите новый пароль
               </label>
               <div className="relative">
@@ -385,14 +401,14 @@ function UserManagement({ currentUser }) {
                   type={showConfirmPassword ? 'text' : 'password'}
                   value={passwordData.confirmPassword}
                   onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md"
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   required
                   minLength={4}
                 />
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
                   tabIndex={-1}
                 >
                   {showConfirmPassword ? (
@@ -412,7 +428,7 @@ function UserManagement({ currentUser }) {
           <div className="flex gap-2 mt-4">
             <button
               type="submit"
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
             >
               Изменить пароль
             </button>
@@ -422,7 +438,7 @@ function UserManagement({ currentUser }) {
                 setShowChangePassword(null);
                 setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
               }}
-              className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+              className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
             >
               Отмена
             </button>
@@ -432,26 +448,26 @@ function UserManagement({ currentUser }) {
 
       {/* Модальное окно подтверждения удаления */}
       {userToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 dark:border dark:border-slate-700/50 rounded-lg shadow-xl p-4 sm:p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
               Подтверждение удаления
             </h3>
-            <p className="text-gray-700 mb-6">
+            <p className="text-gray-700 dark:text-gray-300 mb-6">
               Вы уверены, что хотите удалить пользователя <strong>{userToDelete.name}</strong> (@{userToDelete.username})?
             </p>
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
                 onClick={() => setUserToDelete(null)}
-                className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
               >
                 Отмена
               </button>
               <button
                 type="button"
                 onClick={handleDeleteConfirm}
-                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                className="px-4 py-2 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600"
               >
                 Удалить
               </button>
@@ -461,24 +477,24 @@ function UserManagement({ currentUser }) {
       )}
 
       {/* Список пользователей */}
-      <div className="space-y-4">
+      <div className="space-y-1.5 sm:space-y-2">
         {users.map((user) => (
           <div
             key={user.id}
-            className="p-4 border border-gray-200 rounded-lg flex items-center justify-between"
+            className="p-2 sm:p-3 border border-gray-200 dark:border-slate-700 rounded-lg flex items-center justify-between bg-white dark:bg-slate-800/60"
           >
-            <div>
-              <p className="font-medium text-gray-900">{user.name}</p>
-              <p className="text-sm text-gray-500">@{user.username}</p>
-              <p className="text-xs text-gray-400">
-                {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm sm:text-base font-medium text-gray-900 dark:text-white truncate">{user.name}</p>
+              <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">@{user.username}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                {user.role === 'admin' ? 'Администратор' : user.role === 'assistant' ? 'Помощник' : 'Пользователь'}
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 sm:gap-2 flex-shrink-0">
               {user.id === currentUser.id && (
                 <button
                   onClick={() => setShowChangePassword(user.id)}
-                  className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
                 >
                   Изменить пароль
                 </button>
@@ -491,7 +507,7 @@ function UserManagement({ currentUser }) {
                     e.stopPropagation();
                     handleDeleteClick(user);
                   }}
-                  className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600"
                 >
                   Удалить
                 </button>

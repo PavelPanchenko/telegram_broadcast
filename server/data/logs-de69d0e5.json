@@ -1,80 +1,18 @@
 [
   {
-    "timestamp": "2025-12-17T19:15:49.661Z",
-    "action": "channel_added",
+    "timestamp": "2025-12-18T09:40:38.566Z",
+    "action": "token_deleted",
     "data": {
-      "channelId": "@topuagirls8",
-      "channelName": "TOP_GIRLS_8"
+      "name": "Top Girl Ukraine",
+      "tokenHash": "de69d0e5"
     }
   },
   {
-    "timestamp": "2025-12-17T19:17:30.104Z",
-    "action": "post_sent",
+    "timestamp": "2025-12-18T09:40:49.347Z",
+    "action": "token_added",
     "data": {
-      "channelsCount": 1,
-      "successCount": 1
-    }
-  },
-  {
-    "timestamp": "2025-12-17T19:55:18.474Z",
-    "action": "channel_added",
-    "data": {
-      "channelId": "@ua_top_girls2",
-      "channelName": "UA Top Girls 2 🍓"
-    }
-  },
-  {
-    "timestamp": "2025-12-17T20:01:11.973Z",
-    "action": "post_sent",
-    "data": {
-      "channelsCount": 1,
-      "successCount": 1
-    }
-  },
-  {
-    "timestamp": "2025-12-17T20:02:06.968Z",
-    "action": "template_created",
-    "data": {
-      "name": "Шаблон 1"
-    }
-  },
-  {
-    "timestamp": "2025-12-17T20:04:06.291Z",
-    "action": "template_deleted",
-    "data": {
-      "id": "1766001726967"
-    }
-  },
-  {
-    "timestamp": "2025-12-17T20:12:45.639Z",
-    "action": "post_sent",
-    "data": {
-      "channelsCount": 1,
-      "successCount": 1
-    }
-  },
-  {
-    "timestamp": "2025-12-17T21:01:01.759Z",
-    "action": "post_sent",
-    "data": {
-      "channelsCount": 1,
-      "successCount": 1
-    }
-  },
-  {
-    "timestamp": "2025-12-17T21:08:13.649Z",
-    "action": "history_cleared",
-    "data": {
-      "olderThanDays": "7",
-      "removed": 0
-    }
-  },
-  {
-    "timestamp": "2025-12-17T21:10:51.590Z",
-    "action": "history_cleared",
-    "data": {
-      "all": true,
-      "removed": 4
+      "name": "Top Girl Ukraine",
+      "username": "top_girl_ukraine_bot"
     }
   }
 ]

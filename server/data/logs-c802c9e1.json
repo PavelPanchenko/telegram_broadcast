@@ -14,5 +14,13 @@
       "name": "YouTestBot",
       "username": "you_testBot"
     }
+  },
+  {
+    "timestamp": "2025-12-17T23:46:55.801Z",
+    "action": "token_added",
+    "data": {
+      "name": "YouTestBot",
+      "username": "you_testBot"
+    }
   }
 ]

@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
+import ChannelGroups from './ChannelGroups';
+import { toast } from '../utils/toast';
+import { parseJsonResponse } from '../utils/api';
+import { useAddChannel, useDeleteChannel, useChannelInfo } from '../hooks/useChannels';
 
 function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, token }) {
   const getHeaders = () => {
@@ -18,6 +22,9 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
   const [showImport, setShowImport] = useState(false);
   const [importData, setImportData] = useState('');
   const [fetchingName, setFetchingName] = useState(false);
+  const [activeSection, setActiveSection] = useState('channels'); // 'channels' или 'groups'
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [channelToDelete, setChannelToDelete] = useState(null);
 
   // Получаем все уникальные теги
   const allTags = [...new Set(channels.flatMap(c => c.tags || []))];
@@ -43,6 +50,18 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
   };
 
   const fetchNameTimeoutRef = useRef(null);
+
+  // Обработка события показа групп каналов из PostForm
+  useEffect(() => {
+    const handleShowChannelGroups = () => {
+      setActiveSection('groups');
+    };
+
+    window.addEventListener('showChannelGroups', handleShowChannelGroups);
+    return () => {
+      window.removeEventListener('showChannelGroups', handleShowChannelGroups);
+    };
+  }, []);
 
   const handleChannelIdChange = (e) => {
     const id = e.target.value;
@@ -71,7 +90,6 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
           }
         } catch (err) {
           // Игнорируем ошибки при получении названия
-          console.log('Could not fetch channel name:', err);
         } finally {
           setFetchingName(false);
         }
@@ -88,30 +106,23 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
     };
   }, []);
 
+  // React Query хуки
+  const addChannel = useAddChannel();
+  const deleteChannel = useDeleteChannel();
+
   const handleAddChannel = async (e) => {
     e.preventDefault();
     setError('');
-    setAdding(true);
 
     try {
       const channelTags = tags.split(',').map(t => t.trim()).filter(t => t);
       
-      const response = await fetch('/api/channels', {
-        method: 'POST',
-        headers: getHeaders(),
-        credentials: 'include',
-        body: JSON.stringify({
-          channelId: channelId.trim(),
-          channelName: channelName.trim() || undefined, // Если пустое, сервер получит из чата
-          tags: channelTags,
-        }),
+      await addChannel.mutateAsync({
+        token,
+        channelId: channelId.trim(),
+        channelName: channelName.trim() || undefined,
+        tags: channelTags,
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Ошибка при добавлении канала');
-      }
 
       setChannelId('');
       setChannelName('');
@@ -119,33 +130,33 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       onChannelAdded();
     } catch (err) {
       setError(err.message);
-    } finally {
-      setAdding(false);
     }
   };
 
-  const handleDeleteChannel = async (channelIdToDelete) => {
-    if (!confirm('Вы уверены, что хотите удалить этот канал?')) {
-      return;
-    }
+  const handleDeleteChannelClick = (channelIdToDelete) => {
+    const channel = channels.find(c => c.id === channelIdToDelete);
+    setChannelToDelete({ id: channelIdToDelete, name: channel?.name || channelIdToDelete });
+    setShowDeleteConfirm(true);
+  };
+
+  const handleDeleteChannelConfirm = async () => {
+    if (!channelToDelete) return;
 
     try {
-      const headers = {};
-      if (token) headers['X-Bot-Token'] = token;
-      
-      const response = await fetch(`/api/channels/${channelIdToDelete}`, {
-        method: 'DELETE',
-        headers,
-        credentials: 'include',
+      await deleteChannel.mutateAsync({
+        token,
+        channelId: channelToDelete.id,
       });
 
-      if (!response.ok) {
-        throw new Error('Ошибка при удалении канала');
-      }
-
       onChannelDeleted();
+      toast.success('Канал удален');
+      setShowDeleteConfirm(false);
+      setChannelToDelete(null);
     } catch (err) {
-      alert(err.message);
+      console.error('Error deleting channel:', err);
+      toast.error(err.message || 'Ошибка при удалении канала');
+      setShowDeleteConfirm(false);
+      setChannelToDelete(null);
     }
   };
 
@@ -214,21 +225,67 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
   const filteredChannels = getFilteredChannels();
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
+    <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-6">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold text-gray-900">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
           Управление каналами
         </h2>
-        <div className="flex gap-2">
+      </div>
+
+      {/* Переключатель секций */}
+      <div className="mb-6 border-b border-gray-200 dark:border-slate-700">
+        <nav className="flex space-x-1">
+          <button
+            onClick={() => setActiveSection('channels')}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+              activeSection === 'channels'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-gray-600'
+            }`}
+          >
+            Каналы
+          </button>
+          <button
+            onClick={() => setActiveSection('groups')}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+              activeSection === 'groups'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-gray-600'
+            }`}
+          >
+            Группы каналов
+          </button>
+        </nav>
+      </div>
+
+      {activeSection === 'groups' ? (
+        <ChannelGroups
+          channels={channels}
+          token={token}
+          onSelectGroup={(channelIds) => {
+            if (!channelIds || !Array.isArray(channelIds) || channelIds.length === 0) {
+              toast.error('Группа не содержит каналов');
+              return;
+            }
+            toast.success(`Выбрано каналов: ${channelIds.length}`);
+            // Отправляем событие для выбора группы в форме поста
+            const event = new CustomEvent('selectChannelGroup', { detail: channelIds });
+            window.dispatchEvent(event);
+          }}
+        />
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex gap-2">
           <button
             onClick={handleExport}
-            className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+            className="px-3 py-1 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600"
           >
             Экспорт
           </button>
           <button
             onClick={() => setShowImport(!showImport)}
-            className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="px-3 py-1 text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
           >
             Импорт
           </button>
@@ -236,27 +293,27 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       </div>
 
       {showImport && (
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-          <h3 className="text-sm font-medium text-gray-900 mb-2">Импорт каналов</h3>
+        <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-600/10 rounded-lg border border-blue-200 dark:border-blue-500/30">
+          <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Импорт каналов</h3>
           <div className="space-y-2">
             <input
               type="file"
               accept=".json"
               onChange={handleFileImport}
-              className="text-sm"
+              className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 dark:file:bg-blue-900/20 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900/30"
             />
             <textarea
               value={importData}
               onChange={(e) => setImportData(e.target.value)}
               placeholder="Или вставьте JSON данные..."
               rows={4}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />
             <div className="flex gap-2">
               <button
                 onClick={handleImport}
                 disabled={!importData}
-                className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                className="px-3 py-1 text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
               >
                 Импортировать
               </button>
@@ -265,7 +322,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
                   setShowImport(false);
                   setImportData('');
                 }}
-                className="px-3 py-1 text-sm bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                className="px-3 py-1 text-sm bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
               >
                 Отмена
               </button>
@@ -277,7 +334,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       <form onSubmit={handleAddChannel} className="mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               ID канала или username
             </label>
             <div className="relative">
@@ -286,7 +343,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
                 value={channelId}
                 onChange={handleChannelIdChange}
                 placeholder="@channel или -1001234567890"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:focus:ring-offset-2 dark:focus:ring-offset-slate-800 bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
                 required
               />
               {fetchingName && (
@@ -297,20 +354,20 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Название канала {fetchingName && <span className="text-xs text-gray-500">(получение...)</span>}
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Название канала {fetchingName && <span className="text-xs text-gray-500 dark:text-gray-400">(получение...)</span>}
             </label>
             <input
               type="text"
               value={channelName}
               onChange={(e) => setChannelName(e.target.value)}
               placeholder="Автоматически или введите вручную"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:focus:ring-offset-2 dark:focus:ring-offset-slate-800 bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
               required
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Теги (через запятую)
             </label>
             <input
@@ -318,21 +375,21 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="новости, важное"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:focus:ring-offset-2 dark:focus:ring-offset-slate-800 bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100"
             />
           </div>
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+          <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-red-700 dark:text-red-400 text-sm">
             {error}
           </div>
         )}
 
         <button
           type="submit"
-          disabled={adding}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={addChannel.isPending}
+          className="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {adding ? 'Добавление...' : 'Добавить канал'}
         </button>
@@ -340,7 +397,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
 
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-medium text-gray-900">
+          <h3 className="text-base sm:text-lg font-medium text-gray-900 dark:text-white">
             Список каналов ({filteredChannels.length} / {channels.length})
           </h3>
         </div>
@@ -352,7 +409,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
             placeholder="Поиск каналов..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           />
           {allTags.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -360,8 +417,8 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
                 onClick={() => setSelectedTag('')}
                 className={`px-2 py-1 text-xs rounded ${
                   selectedTag === '' 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    ? 'bg-blue-600 dark:bg-blue-500 text-white' 
+                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
               >
                 Все
@@ -372,8 +429,8 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
                   onClick={() => setSelectedTag(tag)}
                   className={`px-2 py-1 text-xs rounded ${
                     selectedTag === tag 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      ? 'bg-blue-600 dark:bg-blue-500 text-white' 
+                      : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                   }`}
                 >
                   {tag}
@@ -384,46 +441,51 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
         </div>
 
         {!token ? (
-          <p className="text-gray-500">Выберите бота для просмотра каналов</p>
+          <p className="text-gray-500 dark:text-gray-400">Выберите бота для просмотра каналов</p>
         ) : loading && channels.length === 0 ? (
-          <p className="text-gray-500">Загрузка...</p>
+          <p className="text-gray-500 dark:text-gray-400">Загрузка...</p>
         ) : filteredChannels.length === 0 ? (
-          <p className="text-gray-500">
+          <p className="text-gray-500 dark:text-gray-400">
             {channels.length === 0 ? 'Нет добавленных каналов' : 'Каналы не найдены'}
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1.5 sm:space-y-2">
             {filteredChannels.map((channel) => (
               <div
                 key={channel.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200"
+                className="flex items-center justify-between p-2 sm:p-3 bg-gray-50 dark:bg-slate-800/60 rounded border border-gray-200 dark:border-slate-700"
               >
-                <div className="flex items-center space-x-3 flex-1">
+                <div className="flex items-center space-x-2 sm:space-x-3 flex-1 min-w-0">
                   {channel.avatarUrl ? (
                     <img
                       src={channel.avatarUrl}
                       alt={channel.name}
-                      className="w-12 h-12 rounded-full object-cover flex-shrink-0"
+                      className="w-8 h-8 sm:w-12 sm:h-12 rounded-full object-cover flex-shrink-0"
                       onError={(e) => {
                         e.target.style.display = 'none';
                       }}
                     />
                   ) : (
-                    <div className="w-12 h-12 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0">
-                      <span className="text-gray-600 text-lg font-semibold">
+                    <div className="w-8 h-8 sm:w-12 sm:h-12 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center flex-shrink-0">
+                      <span className="text-gray-600 dark:text-gray-300 text-sm sm:text-lg font-semibold">
                         {channel.name.charAt(0).toUpperCase()}
                       </span>
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900 truncate">{channel.name}</p>
-                    <p className="text-sm text-gray-500 truncate">{channel.id}</p>
+                    <p className="text-sm sm:text-base font-medium text-gray-900 dark:text-white truncate">{channel.name}</p>
+                    <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">{channel.id}</p>
+                    {channel.owner && (
+                      <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                        Владелец: {channel.owner.name || channel.owner.username}
+                      </p>
+                    )}
                     {channel.tags && channel.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
+                      <div className="flex flex-wrap gap-0.5 sm:gap-1 mt-0.5 sm:mt-1">
                         {channel.tags.map(tag => (
                           <span
                             key={tag}
-                            className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded"
+                            className="px-1.5 sm:px-2 py-0.5 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded"
                           >
                             {tag}
                           </span>
@@ -433,8 +495,13 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
                   </div>
                 </div>
                 <button
-                  onClick={() => handleDeleteChannel(channel.id)}
-                  className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 ml-2 flex-shrink-0"
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleDeleteChannelClick(channel.id);
+                  }}
+                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600 ml-2 flex-shrink-0"
                 >
                   Удалить
                 </button>
@@ -443,6 +510,43 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
           </div>
         )}
       </div>
+        </>
+      )}
+
+      {/* Модальное окно подтверждения удаления канала */}
+      {showDeleteConfirm && channelToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 dark:border dark:border-slate-700/50 rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-4 sm:p-6">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Удалить канал?
+              </h3>
+              <p className="text-sm text-gray-700 dark:text-gray-300 mb-6">
+                Вы уверены, что хотите удалить канал <strong>"{channelToDelete.name}"</strong>?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDeleteConfirm(false);
+                    setChannelToDelete(null);
+                  }}
+                  className="flex-1 px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteChannelConfirm}
+                  className="flex-1 px-4 py-2 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600"
+                >
+                  Удалить
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

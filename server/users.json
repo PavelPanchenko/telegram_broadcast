@@ -6,5 +6,22 @@
     "name": "Администратор",
     "role": "admin",
     "createdAt": "2025-12-17T20:42:38.701Z"
+  },
+  {
+    "id": "60ee6f7f1be9bcb1486d2f0263a100d8",
+    "username": "Webkiev",
+    "password": "5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5",
+    "name": "Webkiev",
+    "role": "user",
+    "createdAt": "2025-12-17T23:40:13.870Z"
+  },
+  {
+    "id": "013c5597efa969da03e7b43383ef5d20",
+    "username": "Webkiev2",
+    "password": "5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5",
+    "name": "Webkiev2",
+    "role": "assistant",
+    "ownerId": "60ee6f7f1be9bcb1486d2f0263a100d8",
+    "createdAt": "2025-12-18T09:24:30.749Z"
   }
 ]

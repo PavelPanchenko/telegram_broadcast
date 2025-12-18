@@ -102,30 +102,45 @@ function getTokenByHash(hash) {
 
 // Получить текущий бот из запроса
 function getBotFromRequest(req) {
+  const userId = req.session?.user?.id;
+  const users = getUsers();
+  const user = userId ? users.find(u => u.id === userId) : null;
+  
   // Сначала проверяем, передан ли хэш токена
   const tokenHashOrToken = req.headers['x-bot-token'] || req.body.tokenHash || req.body.token;
   let token = null;
   
   if (tokenHashOrToken) {
-    // Пробуем найти токен по хэшу (MD5 хэш всегда 32 символа, но мы берем первые 8)
-    // Если переданный хэш не найден в токенах, считаем что это полный токен
+    // Пробуем найти токен по хэшу
     token = getTokenByHash(tokenHashOrToken);
     
     if (!token) {
       // Если не нашли по хэшу, проверяем, может это полный токен
-      // Полные токены обычно содержат двоеточие (формат: 123456789:ABC...)
       if (tokenHashOrToken.includes(':')) {
         token = tokenHashOrToken;
-      } else {
-        // Если это не полный токен и не найден по хэшу, пробуем найти по хэшу еще раз
-        // (на случай если хэш был передан, но токен еще не загружен)
-        token = getTokenByHash(tokenHashOrToken);
+      }
+    }
+    
+    // Проверяем доступ к токену для обычных пользователей
+    if (userId && token && user?.role !== 'admin') {
+      const tokenId = token.includes(':') ? getTokenHashSync(token) : tokenHashOrToken;
+      if (!canAccessToken(userId, tokenId)) {
+        token = null; // Нет доступа к этому токену
       }
     }
   }
   
-  // Если токен не найден, используем токен по умолчанию
-  if (!token) {
+  // Если токен не найден, используем первый доступный токен пользователя
+  if (!token && userId) {
+    const userTokens = getUserTokens(userId);
+    if (userTokens.length > 0) {
+      const defaultToken = userTokens.find(t => t.isDefault) || userTokens[0];
+      token = defaultToken.token;
+    }
+  }
+  
+  // Fallback для admin - используем токен по умолчанию
+  if (!token && user?.role === 'admin') {
     const tokens = getTokens();
     const defaultToken = tokens.find(t => t.isDefault);
     token = defaultToken ? defaultToken.token : process.env.TELEGRAM_BOT_TOKEN;
@@ -148,30 +163,63 @@ function getBotFromRequest(req) {
 // Получить хэш токена из запроса
 function getTokenHashFromRequest(req) {
   const tokenHashOrToken = req.headers['x-bot-token'] || req.body.tokenHash || req.body.token;
+  const userId = req.session?.user?.id;
   
   if (tokenHashOrToken) {
-    // Если это похоже на хэш (не содержит двоеточие и короткий), возвращаем как есть
+    // Определяем tokenId (хэш или вычисляем)
+    let tokenId;
     if (!tokenHashOrToken.includes(':') && tokenHashOrToken.length <= 32) {
       // Проверяем, есть ли токен с таким хэшем
       const token = getTokenByHash(tokenHashOrToken);
       if (token) {
-        return getTokenHashSync(token);
+        tokenId = getTokenHashSync(token);
+      } else {
+        // Если не нашли, возможно это уже хэш
+        tokenId = tokenHashOrToken;
       }
-      // Если не нашли, возможно это уже хэш
-      return tokenHashOrToken;
+    } else if (tokenHashOrToken.includes(':')) {
+      // Если это полный токен, вычисляем хэш
+      tokenId = getTokenHashSync(tokenHashOrToken);
     }
     
-    // Если это полный токен, вычисляем хэш
-    if (tokenHashOrToken.includes(':')) {
-      return getTokenHashSync(tokenHashOrToken);
+    // Проверяем доступ к токену, если есть пользователь
+    if (userId && tokenId && !canAccessToken(userId, tokenId)) {
+      // Если нет доступа, возвращаем первый доступный токен пользователя
+      const userTokens = getUserTokens(userId);
+      if (userTokens.length > 0) {
+        const defaultToken = userTokens.find(t => t.isDefault) || userTokens[0];
+        return getTokenHashSync(defaultToken.token);
+      }
+      return 'default';
+    }
+    
+    if (tokenId) {
+      return tokenId;
     }
   }
   
-  // Если ничего не найдено, используем токен по умолчанию
-  const tokens = getTokens();
-  const defaultToken = tokens.find(t => t.isDefault);
-  if (defaultToken) {
-    return getTokenHashSync(defaultToken.token);
+  // Если ничего не найдено, используем первый доступный токен пользователя
+  if (userId) {
+    const userTokens = getUserTokens(userId);
+    if (userTokens.length > 0) {
+      const defaultToken = userTokens.find(t => t.isDefault) || userTokens[0];
+      return getTokenHashSync(defaultToken.token);
+    }
+  }
+  
+  // Fallback для старых токенов без userId (только для admin)
+  if (userId) {
+    const users = getUsers();
+    const user = users.find(u => u.id === userId);
+    if (user?.role === 'admin') {
+      const tokens = getTokens();
+      // Admin может видеть токены без userId
+      const defaultToken = tokens.find(t => t.isDefault);
+      if (defaultToken) {
+        return getTokenHashSync(defaultToken.token);
+      }
+    }
+    // Для обычных пользователей возвращаем 'default' если нет своих токенов
   }
   
   return 'default';
@@ -197,6 +245,14 @@ function getTemplatesFile(tokenHash) {
 
 function getScheduledPostsFile(tokenHash) {
   return path.join(dataDir, `scheduled-posts-${tokenHash}.json`);
+}
+
+function getChannelGroupsFile(tokenHash) {
+  return path.join(dataDir, `channel-groups-${tokenHash}.json`);
+}
+
+function getRecurringPostsFile(tokenHash) {
+  return path.join(dataDir, `recurring-posts-${tokenHash}.json`);
 }
 
 function getLogsFile(tokenHash) {
@@ -254,7 +310,6 @@ function saveTokens(tokens) {
   try {
     const data = JSON.stringify(tokens, null, 2);
     fs.writeFileSync(tokensFile, data, 'utf8');
-    console.log(`[Tokens] Saved ${tokens.length} token(s) to ${tokensFile}`);
     return true;
   } catch (error) {
     console.error('[Tokens] Error saving tokens:', error);
@@ -303,6 +358,35 @@ function requireAuth(req, res, next) {
   }
   return res.status(401).json({ error: 'Unauthorized' });
 }
+
+// Функции для проверки доступа к данным
+function getUserTokens(userId) {
+  const users = getUsers();
+  const user = users.find(u => u.id === userId);
+  
+  if (!user) return [];
+  
+  const allTokens = getTokens();
+  
+  // Admin видит все токены (включая старые без userId)
+  if (user.role === 'admin') {
+    return allTokens;
+  }
+  
+  // Assistant видит токены своего владельца (только с userId)
+  if (user.role === 'assistant' && user.ownerId) {
+    return allTokens.filter(t => t.userId && t.userId === user.ownerId);
+  }
+  
+  // User видит только свои токены (строго с userId === userId, игнорируем токены без userId)
+  return allTokens.filter(t => t.userId && t.userId === userId);
+}
+
+function canAccessToken(userId, tokenId) {
+  const userTokens = getUserTokens(userId);
+  return userTokens.some(t => getTokenHashSync(t.token) === tokenId);
+}
+
 
 // Утилиты для работы с файлами (с поддержкой токенов)
 function getChannels(tokenHash = 'default') {
@@ -434,6 +518,84 @@ function saveScheduledPosts(posts, tokenHash = 'default') {
   }
 }
 
+function getChannelGroups(tokenHash = 'default') {
+  try {
+    const file = getChannelGroupsFile(tokenHash);
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+    return [];
+  } catch (error) {
+    console.error('Error reading channel groups:', error);
+    return [];
+  }
+}
+
+function saveChannelGroups(groups, tokenHash = 'default') {
+  try {
+    const file = getChannelGroupsFile(tokenHash);
+    fs.writeFileSync(file, JSON.stringify(groups, null, 2));
+    return true;
+  } catch (error) {
+    console.error('Error saving channel groups:', error);
+    return false;
+  }
+}
+
+function getRecurringPosts(tokenHash = 'default') {
+  try {
+    const file = getRecurringPostsFile(tokenHash);
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+    return [];
+  } catch (error) {
+    console.error('Error reading recurring posts:', error);
+    return [];
+  }
+}
+
+function saveRecurringPosts(posts, tokenHash = 'default') {
+  try {
+    const file = getRecurringPostsFile(tokenHash);
+    fs.writeFileSync(file, JSON.stringify(posts, null, 2));
+    return true;
+  } catch (error) {
+    console.error('Error saving recurring posts:', error);
+    return false;
+  }
+}
+
+// Вычисляет следующую дату отправки для повторяющегося поста
+function getNextScheduledDate(recurringPost) {
+  const now = new Date();
+  const time = recurringPost.time; // Формат "HH:MM"
+  const [hours, minutes] = time.split(':').map(Number);
+  
+  let nextDate = new Date();
+  nextDate.setHours(hours, minutes, 0, 0);
+  
+  if (recurringPost.recurrence === 'daily') {
+    // Ежедневно - если время уже прошло сегодня, то завтра
+    if (nextDate <= now) {
+      nextDate.setDate(nextDate.getDate() + 1);
+    }
+  } else if (recurringPost.recurrence === 'weekly') {
+    // Еженедельно - следующий день недели
+    const targetDay = recurringPost.dayOfWeek || 1; // 0 = воскресенье, 1 = понедельник, ...
+    const currentDay = now.getDay();
+    let daysToAdd = targetDay - currentDay;
+    
+    if (daysToAdd < 0 || (daysToAdd === 0 && nextDate <= now)) {
+      daysToAdd += 7; // Следующая неделя
+    }
+    
+    nextDate.setDate(nextDate.getDate() + daysToAdd);
+  }
+  
+  return nextDate;
+}
+
 function logAction(action, data, tokenHash = 'default') {
   try {
     const logs = getLogs(tokenHash);
@@ -504,17 +666,10 @@ app.post('/api/auth/login', async (req, res) => {
 
   try {
     const users = getUsers();
-    console.log('[Auth] Users found:', users.length);
-    console.log('[Auth] Attempting login for username:', username);
-    
     const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
-    console.log('[Auth] Password hash:', passwordHash);
-    
     const user = users.find(u => u.username === username && u.password === passwordHash);
     
     if (!user) {
-      console.log('[Auth] User not found or password mismatch');
-      console.log('[Auth] Available users:', users.map(u => ({ username: u.username, passwordHash: u.password })));
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -558,32 +713,66 @@ app.get('/api/auth/me', (req, res) => {
   }
 });
 
-// Управление пользователями (только для админов)
+// Управление пользователями
 app.get('/api/users', requireAuth, (req, res) => {
-  if (req.session.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden' });
+  const currentUser = req.session.user;
+  const users = getUsers();
+  
+  let safeUsers;
+  
+  // Admin видит всех пользователей
+  if (currentUser.role === 'admin') {
+    safeUsers = users.map(u => ({
+      id: u.id,
+      username: u.username,
+      name: u.name,
+      role: u.role,
+      ownerId: u.ownerId,
+      createdAt: u.createdAt
+    }));
+  } 
+  // User видит только своих помощников
+  else if (currentUser.role === 'user') {
+    safeUsers = users
+      .filter(u => u.role === 'assistant' && u.ownerId === currentUser.id)
+      .map(u => ({
+        id: u.id,
+        username: u.username,
+        name: u.name,
+        role: u.role,
+        ownerId: u.ownerId,
+        createdAt: u.createdAt
+      }));
+  }
+  // Assistant не видит других пользователей
+  else {
+    safeUsers = [];
   }
   
-  const users = getUsers();
-  const safeUsers = users.map(u => ({
-    id: u.id,
-    username: u.username,
-    name: u.name,
-    role: u.role,
-    createdAt: u.createdAt
-  }));
   res.json(safeUsers);
 });
 
 app.post('/api/users', requireAuth, (req, res) => {
-  if (req.session.user.role !== 'admin') {
+  const currentUser = req.session.user;
+  const { username, password, name, role, ownerId } = req.body;
+  
+  // Admin может создавать любых пользователей
+  // User может создавать только помощников (assistant)
+  if (currentUser.role === 'user') {
+    if (role !== 'assistant' || ownerId !== currentUser.id) {
+      return res.status(403).json({ error: 'Users can only create assistants for themselves' });
+    }
+  } else if (currentUser.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
-
-  const { username, password, name, role } = req.body;
   
   if (!username || !password || !name) {
     return res.status(400).json({ error: 'Username, password and name are required' });
+  }
+
+  // Для assistant требуется ownerId
+  if (role === 'assistant' && !ownerId) {
+    return res.status(400).json({ error: 'ownerId is required for assistant role' });
   }
 
   try {
@@ -600,6 +789,7 @@ app.post('/api/users', requireAuth, (req, res) => {
       password: passwordHash,
       name,
       role: role || 'user',
+      ownerId: role === 'assistant' ? ownerId : undefined,
       createdAt: new Date().toISOString()
     };
 
@@ -612,7 +802,8 @@ app.post('/api/users', requireAuth, (req, res) => {
         id: newUser.id,
         username: newUser.username,
         name: newUser.name,
-        role: newUser.role
+        role: newUser.role,
+        ownerId: newUser.ownerId
       }
     });
   } catch (error) {
@@ -622,38 +813,32 @@ app.post('/api/users', requireAuth, (req, res) => {
 });
 
 app.delete('/api/users/:id', requireAuth, (req, res) => {
-  if (req.session.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-
+  const currentUser = req.session.user;
   const { id } = req.params;
-  console.log('[Users] Delete request for id:', id);
-  console.log('[Users] Current user id:', req.session.user.id);
   
-  if (id === req.session.user.id) {
+  if (id === currentUser.id) {
     return res.status(400).json({ error: 'Cannot delete yourself' });
   }
 
   try {
     const users = getUsers();
-    console.log('[Users] Total users:', users.length);
-    console.log('[Users] User IDs:', users.map(u => u.id));
-    
     const userToDelete = users.find(u => u.id === id);
     if (!userToDelete) {
-      console.log('[Users] User not found with id:', id);
       return res.status(404).json({ error: 'User not found' });
     }
     
-    console.log('[Users] Deleting user:', userToDelete.username);
+    // Admin может удалять всех
+    // User может удалять только своих помощников
+    if (currentUser.role === 'user') {
+      if (userToDelete.role !== 'assistant' || userToDelete.ownerId !== currentUser.id) {
+        return res.status(403).json({ error: 'You can only delete your own assistants' });
+      }
+    } else if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    
     const filtered = users.filter(u => u.id !== id);
-    
-    if (users.length === filtered.length) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
     saveUsers(filtered);
-    console.log('[Users] User deleted successfully. Remaining users:', filtered.length);
     res.json({ success: true });
   } catch (error) {
     console.error('[Users] Delete error:', error);
@@ -700,39 +885,86 @@ app.post('/api/users/change-password', requireAuth, (req, res) => {
 
 // Управление токенами
 app.get('/api/tokens', requireAuth, async (req, res) => {
-  const tokens = getTokens();
+  const userId = req.session.user.id;
+  const users = getUsers();
+  const user = users.find(u => u.id === userId);
+  const userTokens = getUserTokens(userId);
+  const allTokens = getTokens();
+  const isAdmin = user?.role === 'admin';
+  
+  // Для админа обновляем username для всех токенов, для обычных пользователей - только для своих
+  const tokensToUpdate = isAdmin ? allTokens : userTokens;
   
   // Обновляем username для токенов, у которых его нет
-  const updatedTokens = await Promise.all(tokens.map(async (t) => {
+  // Добавляем задержку между запросами, чтобы избежать rate limiting
+  const updatedTokens = [];
+  for (let i = 0; i < tokensToUpdate.length; i++) {
+    const t = tokensToUpdate[i];
     if (!t.username && t.token) {
-      const botInfo = await getBotInfo(t.token);
-      if (botInfo && botInfo.username) {
-        t.username = botInfo.username;
-        // Обновляем имя, если оно было дефолтным
-        if (!t.name || t.name === 'Основной бот') {
-          t.name = botInfo.first_name || botInfo.username || t.name;
+      try {
+        // Добавляем задержку между запросами (100ms)
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
+        const botInfo = await getBotInfo(t.token);
+        if (botInfo && botInfo.username) {
+          t.username = botInfo.username;
+          // Обновляем имя, если оно было дефолтным
+          if (!t.name || t.name === 'Основной бот') {
+            t.name = botInfo.first_name || botInfo.username || t.name;
+          }
+        }
+      } catch (error) {
+        // Игнорируем ошибки при получении информации о боте (rate limiting и т.д.)
+        console.error(`[Tokens] Error getting bot info for token ${getTokenHashSync(t.token)}:`, error.message);
       }
     }
-    return t;
-  }));
+    updatedTokens.push(t);
+  }
   
   // Сохраняем обновленные токены, если были изменения
-  const hasChanges = updatedTokens.some((t, i) => 
-    t.username !== tokens[i]?.username || t.name !== tokens[i]?.name
-  );
+  const hasChanges = updatedTokens.some((t) => {
+    const originalToken = allTokens.find(ot => ot.token === t.token);
+    return originalToken && (t.username !== originalToken?.username || t.name !== originalToken?.name);
+  });
   if (hasChanges) {
-    saveTokens(updatedTokens);
+    // Обновляем токены в общем списке
+    updatedTokens.forEach(updatedToken => {
+      const index = allTokens.findIndex(t => t.token === updatedToken.token);
+      if (index !== -1) {
+        allTokens[index] = updatedToken;
+      }
+    });
+    saveTokens(allTokens);
   }
   
   // Не возвращаем полные токены для безопасности, только метаданные
-  const safeTokens = updatedTokens.map(t => ({
-    id: getTokenHashSync(t.token),
-    name: t.name,
-    createdAt: t.createdAt,
-    isDefault: t.isDefault,
-    username: t.username || null
-  }));
+  const safeTokens = updatedTokens.map(t => {
+    const tokenData = {
+      id: getTokenHashSync(t.token),
+      name: t.name,
+      createdAt: t.createdAt,
+      isDefault: t.isDefault,
+      username: t.username || null
+    };
+    
+    // Для админа добавляем информацию о владельце
+    if (isAdmin && t.userId) {
+      const owner = users.find(u => u.id === t.userId);
+      if (owner) {
+        tokenData.owner = {
+          id: owner.id,
+          username: owner.username,
+          name: owner.name || owner.username
+        };
+      }
+    } else if (isAdmin && !t.userId) {
+      // Токены без userId (старые токены)
+      tokenData.owner = null;
+    }
+    
+    return tokenData;
+  });
   res.json(safeTokens);
 });
 
@@ -769,6 +1001,14 @@ app.post('/api/tokens/validate', requireAuth, async (req, res) => {
 
 app.post('/api/tokens', requireAuth, async (req, res) => {
   const { token, name } = req.body;
+  const userId = req.session.user.id;
+  const users = getUsers();
+  const user = users.find(u => u.id === userId);
+  
+  // Только admin и user могут добавлять токены, assistant не может
+  if (user?.role === 'assistant') {
+    return res.status(403).json({ error: 'Assistants cannot add tokens' });
+  }
   
   if (!token) {
     return res.status(400).json({ error: 'Token is required' });
@@ -781,20 +1021,24 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
     
     const tokens = getTokens();
     
-    // Проверяем, не добавлен ли уже токен
-    if (tokens.find(t => t.token === token)) {
+    // Проверяем, не добавлен ли уже токен у текущего пользователя
+    const userTokens = getUserTokens(userId);
+    if (userTokens.find(t => t.token === token)) {
       return res.status(400).json({ error: 'Token already exists' });
     }
     
     // Если название не указано, используем first_name или username
     const botName = name || me.first_name || me.username || `Бот ${me.id}`;
     
+    const isDefault = userTokens.length === 0; // Первый токен пользователя становится дефолтным
+    
     tokens.push({
       token,
       name: botName,
       username: me.username,
+      userId: userId, // Привязываем токен к пользователю
       createdAt: new Date().toISOString(),
-      isDefault: tokens.length === 0
+      isDefault: isDefault
     });
     
     saveTokens(tokens);
@@ -808,7 +1052,7 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
         name: botName,
         username: me.username,
         createdAt: tokens[tokens.length - 1].createdAt,
-        isDefault: tokens[tokens.length - 1].isDefault
+        isDefault: isDefault
       }
     });
   } catch (error) {
@@ -833,7 +1077,6 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
     }
     
     const tokenHash = getTokenHashSync(token.token);
-    console.log(`[API] Deleting token ${id} (hash: ${tokenHash}, name: ${token.name})`);
     
     // Удаляем связанные данные бота
     try {
@@ -846,26 +1089,19 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
       
       if (fs.existsSync(channelsFile)) {
         fs.unlinkSync(channelsFile);
-        console.log(`[API] Deleted ${channelsFile}`);
       }
       if (fs.existsSync(postsHistoryFile)) {
         fs.unlinkSync(postsHistoryFile);
-        console.log(`[API] Deleted ${postsHistoryFile}`);
       }
       if (fs.existsSync(templatesFile)) {
         fs.unlinkSync(templatesFile);
-        console.log(`[API] Deleted ${templatesFile}`);
       }
       if (fs.existsSync(scheduledPostsFile)) {
         fs.unlinkSync(scheduledPostsFile);
-        console.log(`[API] Deleted ${scheduledPostsFile}`);
       }
       if (fs.existsSync(logsFile)) {
         fs.unlinkSync(logsFile);
-        console.log(`[API] Deleted ${logsFile}`);
       }
-      
-      console.log(`[API] Deleted data files for token ${tokenHash}`);
     } catch (error) {
       console.error(`[API] Error deleting data files for token ${tokenHash}:`, error);
       // Продолжаем удаление токена даже если не удалось удалить файлы
@@ -877,19 +1113,15 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
       return tHash !== id;
     });
     
-    console.log(`[API] Before: ${tokens.length} tokens, After: ${filtered.length} tokens`);
-    
     // Если удаляемый токен был по умолчанию, назначаем первый оставшийся
     if (token.isDefault && filtered.length > 0) {
       filtered[0].isDefault = true;
-      console.log(`[API] Set ${filtered[0].name} as default token`);
     }
     
     saveTokens(filtered);
     bots.delete(token.token);
     logAction('token_deleted', { name: token.name, tokenHash }, id);
     
-    console.log(`[API] Token ${id} deleted successfully`);
     res.json({ success: true });
   } catch (error) {
     console.error('[API] Error in delete token:', error);
@@ -919,13 +1151,61 @@ app.put('/api/tokens/:id', requireAuth, (req, res) => {
 // Получить список каналов
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
-    const tokenHash = getTokenHashFromRequest(req);
+    const userId = req.session.user.id;
+    const users = getUsers();
+    const user = users.find(u => u.id === userId);
+    let tokenHash = getTokenHashFromRequest(req);
+    
+    // Если tokenHash = 'default' и у пользователя нет токенов, возвращаем пустой список
+    if (tokenHash === 'default' && user?.role !== 'admin') {
+      const userTokens = getUserTokens(userId);
+      if (userTokens.length === 0) {
+        return res.json([]);
+      }
+      // Если есть токены, используем первый доступный
+      const defaultToken = userTokens.find(t => t.isDefault) || userTokens[0];
+      tokenHash = getTokenHashSync(defaultToken.token);
+    }
+    
+    // Проверяем доступ к токену
+    if (tokenHash && tokenHash !== 'default') {
+      // Для admin разрешаем доступ к токенам без userId
+      if (user?.role !== 'admin' && !canAccessToken(userId, tokenHash)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+    
     const bot = getBotFromRequest(req);
     const channels = getChannels(tokenHash);
     
+    // Для админа получаем информацию о владельце бота
+    let ownerInfo = null;
+    if (user?.role === 'admin' && tokenHash && tokenHash !== 'default') {
+      const tokens = getTokens();
+      const tokenData = tokens.find(t => getTokenHashSync(t.token) === tokenHash);
+      if (tokenData && tokenData.userId) {
+        const owner = users.find(u => u.id === tokenData.userId);
+        if (owner) {
+          ownerInfo = {
+            id: owner.id,
+            username: owner.username,
+            name: owner.name || owner.username
+          };
+        }
+      }
+    }
+    
     // Если запрошены аватарки, получаем их
     if (req.query.includeAvatars === 'true' && bot) {
-    const channelsWithAvatars = await Promise.all(channels.map(async (channel) => {
+    // Обрабатываем каналы последовательно с задержкой, чтобы избежать rate limiting
+    const channelsWithAvatars = [];
+    for (let i = 0; i < channels.length; i++) {
+      const channel = channels[i];
+      // Добавляем задержку между запросами (50ms)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
       try {
         const chat = await bot.getChat(channel.id);
         let avatarUrl = null;
@@ -963,21 +1243,40 @@ app.get('/api/channels', requireAuth, async (req, res) => {
           }
         }
         
-        return {
+        const channelData = {
           ...channel,
           avatarUrl
         };
+        
+        // Для админа добавляем информацию о владельце
+        if (user?.role === 'admin' && ownerInfo) {
+          channelData.owner = ownerInfo;
+        }
+        
+        channelsWithAvatars.push(channelData);
       } catch (error) {
         // Если не удалось получить информацию о чате, возвращаем канал без аватарки
-        console.error(`[API] Error getting chat info for ${channel.id}:`, error.message);
-        return channel;
+        // Игнорируем ошибки rate limiting (429)
+        if (error.response?.statusCode !== 429) {
+          console.error(`[API] Error getting chat info for ${channel.id}:`, error.message);
+        }
+        const channelData = { ...channel };
+        if (user?.role === 'admin' && ownerInfo) {
+          channelData.owner = ownerInfo;
+        }
+        channelsWithAvatars.push(channelData);
       }
-    }));
+    }
     
       return res.json(channelsWithAvatars);
     }
     
-    res.json(channels);
+    // Для админа добавляем информацию о владельце к каждому каналу
+    const channelsWithOwner = user?.role === 'admin' && ownerInfo
+      ? channels.map(channel => ({ ...channel, owner: ownerInfo }))
+      : channels;
+    
+    res.json(channelsWithOwner);
   } catch (error) {
     console.error('[API] Error fetching channels:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch channels' });
@@ -1144,16 +1443,18 @@ app.put('/api/channels/:channelId', requireAuth, (req, res) => {
 // Удалить канал
 app.delete('/api/channels/:channelId', requireAuth, (req, res) => {
   const { channelId } = req.params;
+  const decodedChannelId = decodeURIComponent(channelId);
   const tokenHash = getTokenHashFromRequest(req);
   const channels = getChannels(tokenHash);
-  const filtered = channels.filter(c => c.id !== channelId);
+  const filtered = channels.filter(c => c.id !== decodedChannelId);
+  
   
   if (channels.length === filtered.length) {
     return res.status(404).json({ error: 'Channel not found' });
   }
 
   saveChannels(filtered, tokenHash);
-  logAction('channel_deleted', { channelId }, tokenHash);
+  logAction('channel_deleted', { channelId: decodedChannelId }, tokenHash);
   res.json({ success: true, channels: filtered });
 });
 
@@ -1234,8 +1535,6 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         filesCount: filesData.length
       });
       
-      console.log(`[API] Post scheduled: ${postData.id}, scheduled for: ${postData.scheduledAt}`);
-      console.log(`[API] Files saved: ${filesData.map(f => `${f.path} (exists: ${fs.existsSync(f.path)})`).join(', ')}`);
       
       // НЕ удаляем файлы здесь - они будут удалены после отправки планировщиком
       // Важно: файлы должны оставаться до отправки планировщиком
@@ -1393,7 +1692,6 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
           if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
           if (file.originalPath && fs.existsSync(file.originalPath)) fs.unlinkSync(file.originalPath);
         } else {
-          console.log(`[API] File ${file.path} is used in scheduled post, keeping it`);
         }
       } catch (e) {
         console.error('Error deleting file:', e);
@@ -1428,22 +1726,16 @@ app.delete('/api/posts/history', requireAuth, (req, res) => {
     const { olderThanDays } = req.query;
     const tokenHash = getTokenHashFromRequest(req);
     
-    console.log('[API] Clear history request:', { olderThanDays, tokenHash });
     
     if (olderThanDays) {
       // Удаляем записи старше указанного количества дней
       const maxAge = parseInt(olderThanDays) * 24 * 60 * 60 * 1000;
       const now = Date.now();
       const history = getPostsHistory(tokenHash);
-      console.log('[API] History before filter:', history.length);
-      
       const filtered = history.filter(post => {
         const postDate = new Date(post.timestamp).getTime();
         return (now - postDate) < maxAge;
       });
-      
-      console.log('[API] History after filter:', filtered.length);
-      console.log('[API] Removed:', history.length - filtered.length);
       
       const file = getPostsHistoryFile(tokenHash);
       fs.writeFileSync(file, JSON.stringify(filtered, null, 2));
@@ -1458,7 +1750,6 @@ app.delete('/api/posts/history', requireAuth, (req, res) => {
       // Удаляем всю историю
       const file = getPostsHistoryFile(tokenHash);
       const history = getPostsHistory(tokenHash);
-      console.log('[API] Clearing all history, count:', history.length);
       
       fs.writeFileSync(file, JSON.stringify([], null, 2));
       logAction('history_cleared', { all: true, removed: history.length }, tokenHash);
@@ -1469,6 +1760,167 @@ app.delete('/api/posts/history', requireAuth, (req, res) => {
     console.error('[API] Error clearing history:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Группы каналов
+app.get('/api/channel-groups', requireAuth, (req, res) => {
+  const tokenHash = getTokenHashFromRequest(req);
+  const groups = getChannelGroups(tokenHash);
+  res.json(groups);
+});
+
+app.post('/api/channel-groups', requireAuth, (req, res) => {
+  const { name, channelIds } = req.body;
+  const tokenHash = getTokenHashFromRequest(req);
+  
+  if (!name || !channelIds || !Array.isArray(channelIds) || channelIds.length === 0) {
+    return res.status(400).json({ error: 'Name and channelIds array are required' });
+  }
+
+  const groups = getChannelGroups(tokenHash);
+  const newGroup = {
+    id: Date.now().toString(),
+    name,
+    channelIds,
+    createdAt: new Date().toISOString()
+  };
+  
+  groups.push(newGroup);
+  saveChannelGroups(groups, tokenHash);
+  logAction('channel_group_created', { groupId: newGroup.id, name, channelCount: channelIds.length }, tokenHash);
+  
+  res.json({ success: true, group: newGroup });
+});
+
+app.delete('/api/channel-groups/:id', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const decodedId = decodeURIComponent(id);
+  const tokenHash = getTokenHashFromRequest(req);
+  
+  const groups = getChannelGroups(tokenHash);
+  const filtered = groups.filter(g => g.id !== decodedId);
+  
+  
+  if (filtered.length === groups.length) {
+    return res.status(404).json({ error: 'Group not found' });
+  }
+  
+  saveChannelGroups(filtered, tokenHash);
+  logAction('channel_group_deleted', { groupId: decodedId }, tokenHash);
+  
+  res.json({ success: true });
+});
+
+// Повторяющиеся посты
+app.get('/api/recurring-posts', requireAuth, (req, res) => {
+  const tokenHash = getTokenHashFromRequest(req);
+  const posts = getRecurringPosts(tokenHash);
+  res.json(posts);
+});
+
+app.post('/api/recurring-posts', requireAuth, (req, res) => {
+  const { text, channelIds, recurrence, time, dayOfWeek, parseMode, buttons, files } = req.body;
+  const tokenHash = getTokenHashFromRequest(req);
+  const user = req.session.user;
+  
+  if (!text || !channelIds || !Array.isArray(channelIds) || channelIds.length === 0) {
+    return res.status(400).json({ error: 'Text and channelIds are required' });
+  }
+  
+  if (!recurrence || !['daily', 'weekly'].includes(recurrence)) {
+    return res.status(400).json({ error: 'Recurrence must be "daily" or "weekly"' });
+  }
+  
+  if (!time || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+    return res.status(400).json({ error: 'Time must be in HH:MM format' });
+  }
+  
+  if (recurrence === 'weekly' && (dayOfWeek === undefined || dayOfWeek < 0 || dayOfWeek > 6)) {
+    return res.status(400).json({ error: 'dayOfWeek must be 0-6 (0=Sunday, 1=Monday, ...)' });
+  }
+  
+  const posts = getRecurringPosts(tokenHash);
+  const nextDate = getNextScheduledDate({ recurrence, time, dayOfWeek });
+  
+  const newPost = {
+    id: Date.now().toString(),
+    text,
+    channelIds,
+    recurrence,
+    time,
+    dayOfWeek: recurrence === 'weekly' ? dayOfWeek : undefined,
+    parseMode: parseMode || 'HTML',
+    buttons: buttons || null,
+    files: files || [],
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    nextScheduledAt: nextDate.toISOString(),
+    author: user ? {
+      id: user.id,
+      username: user.username,
+      name: user.name
+    } : null
+  };
+  
+  posts.push(newPost);
+  saveRecurringPosts(posts, tokenHash);
+  logAction('recurring_post_created', { 
+    postId: newPost.id, 
+    recurrence, 
+    time,
+    channelCount: channelIds.length 
+  }, tokenHash);
+  
+  res.json({ success: true, post: newPost });
+});
+
+app.put('/api/recurring-posts/:id', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const { enabled, text, channelIds, recurrence, time, dayOfWeek, parseMode, buttons } = req.body;
+  const tokenHash = getTokenHashFromRequest(req);
+  
+  const posts = getRecurringPosts(tokenHash);
+  const index = posts.findIndex(p => p.id === id);
+  
+  if (index === -1) {
+    return res.status(404).json({ error: 'Recurring post not found' });
+  }
+  
+  if (enabled !== undefined) posts[index].enabled = enabled;
+  if (text !== undefined) posts[index].text = text;
+  if (channelIds !== undefined) posts[index].channelIds = channelIds;
+  if (recurrence !== undefined) posts[index].recurrence = recurrence;
+  if (time !== undefined) posts[index].time = time;
+  if (dayOfWeek !== undefined) posts[index].dayOfWeek = dayOfWeek;
+  if (parseMode !== undefined) posts[index].parseMode = parseMode;
+  if (buttons !== undefined) posts[index].buttons = buttons;
+  
+  // Пересчитываем следующую дату
+  posts[index].nextScheduledAt = getNextScheduledDate(posts[index]).toISOString();
+  
+  saveRecurringPosts(posts, tokenHash);
+  logAction('recurring_post_updated', { postId: id }, tokenHash);
+  
+  res.json({ success: true, post: posts[index] });
+});
+
+app.delete('/api/recurring-posts/:id', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const decodedId = decodeURIComponent(id);
+  const tokenHash = getTokenHashFromRequest(req);
+  
+  const posts = getRecurringPosts(tokenHash);
+  const filtered = posts.filter(p => p.id !== decodedId);
+  
+  
+  if (filtered.length === posts.length) {
+    return res.status(404).json({ error: 'Recurring post not found' });
+  }
+  
+  saveRecurringPosts(filtered, tokenHash);
+  logAction('recurring_post_deleted', { postId: decodedId }, tokenHash);
+  
+  res.json({ success: true });
 });
 
 // Шаблоны постов
@@ -1493,14 +1945,17 @@ app.post('/api/templates', requireAuth, (req, res) => {
 
 app.delete('/api/templates/:id', requireAuth, (req, res) => {
   const { id } = req.params;
+  const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
   const templates = getTemplates(tokenHash);
-  const filtered = templates.filter(t => t.id !== id);
+  const filtered = templates.filter(t => t.id !== decodedId);
+  
+  
   if (templates.length === filtered.length) {
     return res.status(404).json({ error: 'Template not found' });
   }
   saveTemplates(filtered, tokenHash);
-  logAction('template_deleted', { id }, tokenHash);
+  logAction('template_deleted', { id: decodedId }, tokenHash);
   res.json({ success: true });
 });
 
@@ -1595,11 +2050,18 @@ app.put('/api/scheduled-posts/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/scheduled-posts/:id', requireAuth, (req, res) => {
   const { id } = req.params;
+  const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
   const scheduled = getScheduledPosts(tokenHash);
-  const filtered = scheduled.filter(p => p.id !== id);
+  const filtered = scheduled.filter(p => p.id !== decodedId);
+  
+  
+  if (scheduled.length === filtered.length) {
+    return res.status(404).json({ error: 'Scheduled post not found' });
+  }
+  
   saveScheduledPosts(filtered, tokenHash);
-  logAction('scheduled_post_deleted', { id }, tokenHash);
+  logAction('scheduled_post_deleted', { id: decodedId }, tokenHash);
   res.json({ success: true });
 });
 
@@ -1631,7 +2093,6 @@ app.post('/api/scheduled-posts/process', async (req, res) => {
     // Запускаем обработку асинхронно
     setTimeout(() => {
       // Здесь можно вызвать логику планировщика
-      console.log('[Manual] Processing scheduled posts...');
     }, 100);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1758,7 +2219,6 @@ app.post('/api/channels/discover-from-updates', requireAuth, async (req, res) =>
           }
         } catch (error) {
           // Игнорируем ошибки для отдельных чатов
-          console.log(`[Discover] Error checking chat ${chatId}: ${error.message}`);
         }
       }
     }
@@ -1825,12 +2285,10 @@ cron.schedule('* * * * *', async () => {
       return; // Нет постов для отправки
     }
 
-    console.log(`[Scheduler] Found ${toSend.length} post(s) to send`);
 
     for (const post of toSend) {
       const historyEntries = [];
       try {
-        console.log(`[Scheduler] Sending scheduled post ${post.id} to ${post.channelIds.length} channel(s)`);
         
         // Нормализуем parse_mode
         // Telegram Bot API поддерживает: "HTML" и "MarkdownV2" (старый "Markdown" deprecated)
@@ -1947,7 +2405,6 @@ cron.schedule('* * * * *', async () => {
             } else {
               await sendWithRetry(() => bot.sendMessage(channelId, post.text, sendOptions));
             }
-            console.log(`[Scheduler] Successfully sent to channel ${channelId}`);
             historyEntries.push({ channelId, success: true, timestamp: new Date().toISOString() });
           } catch (channelError) {
             console.error(`[Scheduler] Error sending to channel ${channelId}:`, channelError);
@@ -1972,7 +2429,6 @@ cron.schedule('* * * * *', async () => {
             scheduledAt: post.scheduledAt,
             author: post.author || null // Сохраняем автора из запланированного поста
           }], tokenHash);
-          console.log(`[Scheduler] Post ${post.id} saved to history`);
         }
 
         // Удаляем файлы
@@ -1986,11 +2442,16 @@ cron.schedule('* * * * *', async () => {
           });
         }
 
-      // Удаляем из запланированных
-      const remaining = scheduled.filter(p => p.id !== post.id);
-      saveScheduledPosts(remaining, tokenHash);
-      logAction('scheduled_post_sent', { postId: post.id, channelIds: post.channelIds }, tokenHash);
-      console.log(`[Scheduler] Post ${post.id} sent successfully and removed from schedule (token: ${tokenHash})`);
+      // Удаляем из запланированных (только если это не повторяющийся пост)
+      if (!post.recurringPostId) {
+        const remaining = scheduled.filter(p => p.id !== post.id);
+        saveScheduledPosts(remaining, tokenHash);
+      } else {
+        // Для повторяющихся постов просто удаляем этот экземпляр
+        const remaining = scheduled.filter(p => p.id !== post.id);
+        saveScheduledPosts(remaining, tokenHash);
+      }
+      logAction('scheduled_post_sent', { postId: post.id, channelIds: post.channelIds, recurring: !!post.recurringPostId }, tokenHash);
       } catch (error) {
         console.error(`[Scheduler] Error processing scheduled post ${post.id} (token: ${tokenHash}):`, error);
         logAction('scheduled_post_error', { postId: post.id, error: error.message }, tokenHash);
@@ -2020,17 +2481,8 @@ app.get('*', (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`[Scheduler] Cron job started - checking for scheduled posts every minute`);
-  
   // Проверяем запланированные посты при старте
   const scheduled = getScheduledPosts();
-  if (scheduled.length > 0) {
-    console.log(`[Scheduler] Found ${scheduled.length} scheduled post(s) in queue`);
-    scheduled.forEach(post => {
-      console.log(`  - Post ${post.id}: scheduled for ${post.scheduledAt}`);
-    });
-  }
 });
 
 server.on('error', (error) => {

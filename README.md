@@ -158,16 +158,31 @@ _italic_
 
 ## Структура данных
 
-Все данные сохраняются в файлах JSON в папке `server/data/`:
-- `channels-{tokenHash}.json` - список каналов для каждого бота
-- `posts-history-{tokenHash}.json` - история постов
-- `templates-{tokenHash}.json` - шаблоны
-- `scheduled-posts-{tokenHash}.json` - запланированные посты
-- `recurring-posts-{tokenHash}.json` - автоматические посты
-- `channel-groups-{tokenHash}.json` - группы каналов
-- `logs-{tokenHash}.json` - логи действий
-- `tokens.json` - список всех ботов
-- `users.json` - список пользователей
+Все данные сохраняются в SQLite базе данных `server/database.db`:
+- `users` - пользователи системы
+- `tokens` - токены ботов
+- `channels` - каналы для каждого бота (по tokenHash)
+- `posts_history` - история постов
+- `templates` - шаблоны постов
+- `scheduled_posts` - запланированные посты
+- `recurring_posts` - автоматические посты
+- `channel_groups` - группы каналов
+- `logs` - логи действий
+
+### Миграция с JSON на SQLite
+
+Если у вас есть старые данные в JSON файлах, выполните миграцию:
+
+```bash
+npm run migrate
+```
+
+Скрипт автоматически:
+- Создаст БД и таблицы
+- Перенесет все данные из JSON файлов
+- Сохранит оригинальные JSON файлы (можно удалить после проверки)
+
+**Важно:** После миграции приложение будет использовать только БД. JSON файлы больше не используются.
 
 ## Деплой
 

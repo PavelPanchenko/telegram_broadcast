@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useChannels } from './hooks/useChannels';
+import { useTokens } from './hooks/useTokens';
 import ChannelManager from './components/ChannelManager';
 import PostForm from './components/PostForm';
 import BotStatus from './components/BotStatus';
@@ -19,11 +20,12 @@ import { parseJsonResponse } from './utils/api';
 function App() {
   const [user, setUser] = useState(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
-  const [channels, setChannels] = useState([]);
-  const [loading, setLoading] = useState(false); // Начинаем с false, так как токен еще не выбран
+  // channels и loading теперь получаются напрямую из React Query
   const [activeTab, setActiveTab] = useState('post');
   const [selectedToken, setSelectedToken] = useState(null);
-  const [tokens, setTokens] = useState([]);
+  
+  // Получаем токены напрямую из React Query
+  const { data: tokens = [] } = useTokens();
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('darkMode');
     return saved ? JSON.parse(saved) : false;
@@ -89,10 +91,9 @@ function App() {
   // Используем React Query для каналов
   const { data: channelsData = [], isLoading: channelsLoading } = useChannels(selectedToken, { includeAvatars: true });
   
-  useEffect(() => {
-    setChannels(channelsData);
-    setLoading(channelsLoading);
-  }, [channelsData, channelsLoading]);
+  // Используем данные напрямую из React Query, не дублируем в state
+  const channels = channelsData;
+  const loading = channelsLoading;
 
   // Обработка события показа групп каналов из PostForm
   useEffect(() => {
@@ -106,9 +107,9 @@ function App() {
     };
   }, []);
 
-  const handleBotChange = (tokenId) => {
+  const handleBotChange = useCallback((tokenId) => {
     setSelectedToken(tokenId);
-  };
+  }, []);
 
   const handleChannelAdded = () => {
     // React Query автоматически обновит данные после мутации
@@ -193,7 +194,7 @@ function App() {
           </div>
         </div>
 
-        <BotSelector onBotChange={handleBotChange} onTokensChange={setTokens} />
+        <BotSelector onBotChange={handleBotChange} userRole={user?.role} />
         <BotStatus token={selectedToken} hasTokens={tokens && tokens.length > 0} />
 
         {/* Навигация */}

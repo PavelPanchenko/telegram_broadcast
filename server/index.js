@@ -12,6 +12,18 @@ import basicAuth from 'express-basic-auth';
 import cron from 'node-cron';
 import crypto from 'crypto';
 import session from 'express-session';
+import { 
+  initDatabase,
+  getUsers, getUserById, getUserByUsername, createUser, updateUser, deleteUser,
+  getTokens, getTokenByHash as dbGetTokenByHash, getTokenByToken, createToken, updateToken, deleteToken,
+  getChannels, getChannelById, createChannel, updateChannel, deleteChannel,
+  getPostsHistory, addPostsHistory, deleteAllPostsHistory, deleteOldPostsHistory,
+  getTemplates, createTemplate, deleteTemplate,
+  getScheduledPosts, getScheduledPostById, createScheduledPost, updateScheduledPost, deleteScheduledPost,
+  getRecurringPosts, getRecurringPostById, createRecurringPost, updateRecurringPost, deleteRecurringPost,
+  getChannelGroups, createChannelGroup, deleteChannelGroup,
+  getLogs, addLog
+} from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,14 +98,12 @@ const upload = multer({
 
 // Хранение ботов по токенам
 const bots = new Map(); // token -> bot instance
-const tokensFile = path.join(__dirname, 'tokens.json');
-const usersFile = path.join(__dirname, 'users.json');
 
-// Инициализация Telegram бота (основной токен из .env для обратной совместимости)
-if (process.env.TELEGRAM_BOT_TOKEN) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  bots.set(token, new TelegramBot(token, { polling: false }));
-}
+// Инициализация БД
+initDatabase();
+
+// Боты инициализируются динамически при использовании
+// Больше не создаем бота по умолчанию из .env
 
 // Функция для получения хэша токена (для имен файлов)
 function getTokenHashSync(token) {
@@ -102,8 +112,7 @@ function getTokenHashSync(token) {
 
 // Получить токен по хэшу
 function getTokenByHash(hash) {
-  const tokens = getTokens();
-  const tokenData = tokens.find(t => getTokenHashSync(t.token) === hash);
+  const tokenData = dbGetTokenByHash(hash);
   return tokenData ? tokenData.token : null;
 }
 
@@ -150,7 +159,7 @@ function getBotFromRequest(req) {
   if (!token && user?.role === 'admin') {
     const tokens = getTokens();
     const defaultToken = tokens.find(t => t.isDefault);
-    token = defaultToken ? defaultToken.token : process.env.TELEGRAM_BOT_TOKEN;
+    token = defaultToken ? defaultToken.token : null;
   }
   
   if (!token) return null;
@@ -232,46 +241,7 @@ function getTokenHashFromRequest(req) {
   return 'default';
 }
 
-// Файлы для хранения данных (будут создаваться динамически по токенам)
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-function getChannelsFile(tokenHash) {
-  return path.join(dataDir, `channels-${tokenHash}.json`);
-}
-
-function getPostsHistoryFile(tokenHash) {
-  return path.join(dataDir, `posts-history-${tokenHash}.json`);
-}
-
-function getTemplatesFile(tokenHash) {
-  return path.join(dataDir, `templates-${tokenHash}.json`);
-}
-
-function getScheduledPostsFile(tokenHash) {
-  return path.join(dataDir, `scheduled-posts-${tokenHash}.json`);
-}
-
-function getChannelGroupsFile(tokenHash) {
-  return path.join(dataDir, `channel-groups-${tokenHash}.json`);
-}
-
-function getRecurringPostsFile(tokenHash) {
-  return path.join(dataDir, `recurring-posts-${tokenHash}.json`);
-}
-
-function getLogsFile(tokenHash) {
-  return path.join(dataDir, `logs-${tokenHash}.json`);
-}
-
-// Старые файлы для обратной совместимости
-const channelsFile = path.join(__dirname, 'channels.json');
-const postsHistoryFile = path.join(__dirname, 'posts-history.json');
-const templatesFile = path.join(__dirname, 'templates.json');
-const scheduledPostsFile = path.join(__dirname, 'scheduled-posts.json');
-const logsFile = path.join(__dirname, 'logs.json');
+// Старые функции для работы с файлами больше не нужны - данные в БД
 
 // Утилиты для работы с токенами
 async function getBotInfo(token) {
@@ -289,73 +259,27 @@ async function getBotInfo(token) {
   }
 }
 
-function getTokens() {
-  try {
-    if (fs.existsSync(tokensFile)) {
-      return JSON.parse(fs.readFileSync(tokensFile, 'utf8'));
-    }
-    // Если токенов нет, но есть токен в .env, добавляем его
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-      const tokens = [{
-        token: process.env.TELEGRAM_BOT_TOKEN,
-        name: 'Основной бот',
-        username: null, // Будет обновлено при первом запросе /api/tokens
-        createdAt: new Date().toISOString(),
-        isDefault: true
-      }];
-      saveTokens(tokens);
-      return tokens;
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading tokens:', error);
-    return [];
-  }
-}
+// Функции getTokens и saveTokens теперь используют БД напрямую
+// getTokens() - импортирована из db.js
+// saveTokens() больше не нужна, используем createToken, updateToken, deleteToken
 
-function saveTokens(tokens) {
-  try {
-    const data = JSON.stringify(tokens, null, 2);
-    fs.writeFileSync(tokensFile, data, 'utf8');
-    return true;
-  } catch (error) {
-    console.error('[Tokens] Error saving tokens:', error);
-    return false;
-  }
-}
+// Функции getUsers и saveUsers теперь используют БД напрямую
+// getUsers() - импортирована из db.js
+// saveUsers() больше не нужна, используем createUser, updateUser, deleteUser
 
-// Утилиты для работы с пользователями
-function getUsers() {
-  try {
-    if (fs.existsSync(usersFile)) {
-      return JSON.parse(fs.readFileSync(usersFile, 'utf8'));
-    }
-    // Создаем дефолтного пользователя, если файла нет
-    const defaultUsers = [{
-      id: crypto.randomBytes(16).toString('hex'),
-      username: 'admin',
-      password: crypto.createHash('sha256').update('admin').digest('hex'), // пароль: admin
-      name: 'Администратор',
-      role: 'admin',
-      createdAt: new Date().toISOString()
-    }];
-    saveUsers(defaultUsers);
-    return defaultUsers;
-  } catch (error) {
-    console.error('[Users] Error reading users:', error);
-    return [];
-  }
-}
-
-function saveUsers(users) {
-  try {
-    const data = JSON.stringify(users, null, 2);
-    fs.writeFileSync(usersFile, data, 'utf8');
-    return true;
-  } catch (error) {
-    console.error('[Users] Error saving users:', error);
-    return false;
-  }
+// Создаем дефолтного пользователя при первом запуске, если БД пустая
+const users = getUsers();
+if (users.length === 0) {
+  const defaultUser = {
+    id: crypto.randomBytes(16).toString('hex'),
+    username: 'admin',
+    password: crypto.createHash('sha256').update('admin').digest('hex'), // пароль: admin
+    name: 'Администратор',
+    role: 'admin',
+    createdAt: new Date().toISOString()
+  };
+  createUser(defaultUser);
+  console.log('[DB] Created default admin user (username: admin, password: admin)');
 }
 
 // Middleware для проверки авторизации
@@ -396,182 +320,29 @@ function canAccessToken(userId, tokenId) {
 
 
 // Утилиты для работы с файлами (с поддержкой токенов)
-function getChannels(tokenHash = 'default') {
-  try {
-    const file = getChannelsFile(tokenHash);
-    // Проверяем новый файл
-    if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return Array.isArray(data) ? data : [];
-    }
-    // Обратная совместимость: проверяем старый файл
-    if (tokenHash === 'default' && fs.existsSync(channelsFile)) {
-      const data = JSON.parse(fs.readFileSync(channelsFile, 'utf8'));
-      return Array.isArray(data) ? data : [];
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading channels:', error);
-    return [];
-  }
-}
+// Функции getChannels и saveChannels теперь используют БД
+// getChannels() - импортирована из db.js
+// saveChannels() больше не нужна, используем createChannel, updateChannel, deleteChannel
 
-function saveChannels(channels, tokenHash = 'default') {
-  try {
-    const file = getChannelsFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(channels, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving channels:', error);
-    return false;
-  }
-}
+// Функции getPostsHistory и savePostsHistory теперь используют БД
+// getPostsHistory() - импортирована из db.js
+// savePostsHistory() - используем addPostsHistory из db.js (очистка происходит автоматически)
 
-function getPostsHistory(tokenHash = 'default') {
-  try {
-    const file = getPostsHistoryFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    // Обратная совместимость
-    if (tokenHash === 'default' && fs.existsSync(postsHistoryFile)) {
-      return JSON.parse(fs.readFileSync(postsHistoryFile, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading posts history:', error);
-    return [];
-  }
-}
+// Функции getTemplates и saveTemplates теперь используют БД
+// getTemplates() - импортирована из db.js
+// saveTemplates() больше не нужна, используем createTemplate, deleteTemplate
 
-function savePostsHistory(history, tokenHash = 'default') {
-  try {
-    const allHistory = getPostsHistory(tokenHash);
-    allHistory.unshift(...history);
-    
-    // Автоматическая очистка: храним только последние N постов (по умолчанию 100)
-    const maxHistorySize = parseInt(process.env.MAX_HISTORY_SIZE) || 100;
-    const limited = allHistory.slice(0, maxHistorySize);
-    
-    // Также удаляем записи старше N дней (по умолчанию 30 дней)
-    const maxAgeDays = parseInt(process.env.MAX_HISTORY_AGE_DAYS) || 30;
-    const maxAge = maxAgeDays * 24 * 60 * 60 * 1000; // миллисекунды
-    const now = Date.now();
-    const filtered = limited.filter(post => {
-      const postDate = new Date(post.timestamp).getTime();
-      return (now - postDate) < maxAge;
-    });
-    
-    const file = getPostsHistoryFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(filtered, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving posts history:', error);
-    return false;
-  }
-}
+// Функции getScheduledPosts и saveScheduledPosts теперь используют БД
+// getScheduledPosts() - импортирована из db.js
+// saveScheduledPosts() больше не нужна, используем createScheduledPost, updateScheduledPost, deleteScheduledPost
 
-function getTemplates(tokenHash = 'default') {
-  try {
-    const file = getTemplatesFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    if (tokenHash === 'default' && fs.existsSync(templatesFile)) {
-      return JSON.parse(fs.readFileSync(templatesFile, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading templates:', error);
-    return [];
-  }
-}
+// Функции getChannelGroups и saveChannelGroups теперь используют БД
+// getChannelGroups() - импортирована из db.js
+// saveChannelGroups() больше не нужна, используем createChannelGroup, deleteChannelGroup
 
-function saveTemplates(templates, tokenHash = 'default') {
-  try {
-    const file = getTemplatesFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(templates, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving templates:', error);
-    return false;
-  }
-}
-
-function getScheduledPosts(tokenHash = 'default') {
-  try {
-    const file = getScheduledPostsFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    if (tokenHash === 'default' && fs.existsSync(scheduledPostsFile)) {
-      return JSON.parse(fs.readFileSync(scheduledPostsFile, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading scheduled posts:', error);
-    return [];
-  }
-}
-
-function saveScheduledPosts(posts, tokenHash = 'default') {
-  try {
-    const file = getScheduledPostsFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(posts, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving scheduled posts:', error);
-    return false;
-  }
-}
-
-function getChannelGroups(tokenHash = 'default') {
-  try {
-    const file = getChannelGroupsFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading channel groups:', error);
-    return [];
-  }
-}
-
-function saveChannelGroups(groups, tokenHash = 'default') {
-  try {
-    const file = getChannelGroupsFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(groups, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving channel groups:', error);
-    return false;
-  }
-}
-
-function getRecurringPosts(tokenHash = 'default') {
-  try {
-    const file = getRecurringPostsFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    console.error('Error reading recurring posts:', error);
-    return [];
-  }
-}
-
-function saveRecurringPosts(posts, tokenHash = 'default') {
-  try {
-    const file = getRecurringPostsFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(posts, null, 2));
-    return true;
-  } catch (error) {
-    console.error('Error saving recurring posts:', error);
-    return false;
-  }
-}
+// Функции getRecurringPosts и saveRecurringPosts теперь используют БД
+// getRecurringPosts() - импортирована из db.js
+// saveRecurringPosts() больше не нужна, используем createRecurringPost, updateRecurringPost, deleteRecurringPost
 
 // Вычисляет следующую дату отправки для повторяющегося поста
 function getNextScheduledDate(recurringPost) {
@@ -603,35 +374,14 @@ function getNextScheduledDate(recurringPost) {
   return nextDate;
 }
 
+// Функции logAction и getLogs теперь используют БД
+// logAction() - используем addLog из db.js
+// getLogs() - импортирована из db.js
 function logAction(action, data, tokenHash = 'default') {
   try {
-    const logs = getLogs(tokenHash);
-    logs.push({
-      timestamp: new Date().toISOString(),
-      action,
-      data
-    });
-    // Храним только последние 500 логов
-    const limited = logs.slice(-500);
-    const file = getLogsFile(tokenHash);
-    fs.writeFileSync(file, JSON.stringify(limited, null, 2));
+    addLog(tokenHash, action, data);
   } catch (error) {
     console.error('Error logging action:', error);
-  }
-}
-
-function getLogs(tokenHash = 'default') {
-  try {
-    const file = getLogsFile(tokenHash);
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    if (tokenHash === 'default' && fs.existsSync(logsFile)) {
-      return JSON.parse(fs.readFileSync(logsFile, 'utf8'));
-    }
-    return [];
-  } catch (error) {
-    return [];
   }
 }
 
@@ -805,8 +555,7 @@ app.post('/api/users', requireAuth, (req, res) => {
       createdAt: new Date().toISOString()
     };
 
-    users.push(newUser);
-    saveUsers(users);
+    createUser(newUser);
 
     res.json({
       success: true,
@@ -849,8 +598,7 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
     
-    const filtered = users.filter(u => u.id !== id);
-    saveUsers(filtered);
+    deleteUser(id);
     res.json({ success: true });
   } catch (error) {
     console.error('[Users] Delete error:', error);
@@ -885,9 +633,7 @@ app.post('/api/users/change-password', requireAuth, (req, res) => {
     }
 
     const newPasswordHash = crypto.createHash('sha256').update(newPassword).digest('hex');
-    user.password = newPasswordHash;
-    
-    saveUsers(users);
+    updateUser(userId, { password: newPasswordHash });
     res.json({ success: true });
   } catch (error) {
     console.error('[Users] Change password error:', error);
@@ -940,14 +686,15 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
     return originalToken && (t.username !== originalToken?.username || t.name !== originalToken?.name);
   });
   if (hasChanges) {
-    // Обновляем токены в общем списке
+    // Обновляем токены в БД
     updatedTokens.forEach(updatedToken => {
-      const index = allTokens.findIndex(t => t.token === updatedToken.token);
-      if (index !== -1) {
-        allTokens[index] = updatedToken;
+      if (updatedToken.token) {
+        updateToken(updatedToken.token, {
+          name: updatedToken.name,
+          username: updatedToken.username
+        });
       }
     });
-    saveTokens(allTokens);
   }
   
   // Не возвращаем полные токены для безопасности, только метаданные
@@ -1058,16 +805,16 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
     
     const isDefault = userTokens.length === 0; // Первый токен пользователя становится дефолтным
     
-    tokens.push({
+    const tokenData = {
       token,
       name: botName,
       username: me.username,
       userId: userId, // Привязываем токен к пользователю
       createdAt: new Date().toISOString(),
       isDefault: isDefault
-    });
+    };
     
-    saveTokens(tokens);
+    createToken(tokenData);
     bots.set(token, testBot);
     logAction('token_added', { name: botName, username: me.username }, getTokenHashSync(token));
     
@@ -1090,6 +837,11 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
 app.delete('/api/tokens/:id', requireAuth, (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.session.user.id;
+    const users = getUsers();
+    const user = users.find(u => u.id === userId);
+    const isAdmin = user?.role === 'admin';
+    
     const tokens = getTokens();
     const token = tokens.find(t => getTokenHashSync(t.token) === id);
     
@@ -1097,40 +849,48 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
       return res.status(404).json({ error: 'Token not found' });
     }
     
-    // Нельзя удалить последний токен
-    if (tokens.length === 1) {
-      return res.status(400).json({ error: 'Cannot delete the last token' });
+    // Проверяем доступ к токену для обычных пользователей
+    if (!isAdmin) {
+      const userTokens = getUserTokens(userId);
+      const userToken = userTokens.find(t => getTokenHashSync(t.token) === id);
+      if (!userToken) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      
+      // Обычные пользователи не могут удалить последний токен
+      if (userTokens.length === 1) {
+        return res.status(400).json({ error: 'Cannot delete the last token' });
+      }
     }
+    
+    // Админ может удалить все токены
     
     const tokenHash = getTokenHashSync(token.token);
     
-    // Удаляем связанные данные бота
+    // Удаляем связанные данные бота из БД
     try {
-      // Удаляем файлы данных
-      const channelsFile = getChannelsFile(tokenHash);
-      const postsHistoryFile = getPostsHistoryFile(tokenHash);
-      const templatesFile = getTemplatesFile(tokenHash);
-      const scheduledPostsFile = getScheduledPostsFile(tokenHash);
-      const logsFile = getLogsFile(tokenHash);
+      // Удаляем все данные, связанные с этим токеном
+      const channels = getChannels(tokenHash);
+      channels.forEach(ch => deleteChannel(ch.id));
       
-      if (fs.existsSync(channelsFile)) {
-        fs.unlinkSync(channelsFile);
-      }
-      if (fs.existsSync(postsHistoryFile)) {
-        fs.unlinkSync(postsHistoryFile);
-      }
-      if (fs.existsSync(templatesFile)) {
-        fs.unlinkSync(templatesFile);
-      }
-      if (fs.existsSync(scheduledPostsFile)) {
-        fs.unlinkSync(scheduledPostsFile);
-      }
-      if (fs.existsSync(logsFile)) {
-        fs.unlinkSync(logsFile);
-      }
+      deleteAllPostsHistory(tokenHash);
+      
+      const templates = getTemplates(tokenHash);
+      templates.forEach(t => deleteTemplate(t.id));
+      
+      const scheduled = getScheduledPosts(tokenHash);
+      scheduled.forEach(p => deleteScheduledPost(p.id));
+      
+      const recurring = getRecurringPosts(tokenHash);
+      recurring.forEach(p => deleteRecurringPost(p.id));
+      
+      const groups = getChannelGroups(tokenHash);
+      groups.forEach(g => deleteChannelGroup(g.id));
+      
+      // Логи удалять не нужно - они могут быть полезны для аудита
     } catch (error) {
-      console.error(`[API] Error deleting data files for token ${tokenHash}:`, error);
-      // Продолжаем удаление токена даже если не удалось удалить файлы
+      console.error(`[API] Error deleting data for token ${tokenHash}:`, error);
+      // Продолжаем удаление токена даже если не удалось удалить данные
     }
     
     // Фильтруем токены, оставляя все кроме удаляемого
@@ -1139,12 +899,15 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
       return tHash !== id;
     });
     
-    // Если удаляемый токен был по умолчанию, назначаем первый оставшийся
-    if (token.isDefault && filtered.length > 0) {
-      filtered[0].isDefault = true;
-    }
+    // Удаляем токен из БД
+    deleteToken(token.token);
     
-    saveTokens(filtered);
+    // Если удаляемый токен был по умолчанию, назначаем первый оставшийся
+    const remainingTokens = getTokens();
+    if (token.isDefault && remainingTokens.length > 0) {
+      const firstToken = remainingTokens[0];
+      updateToken(firstToken.token, { isDefault: true });
+    }
     bots.delete(token.token);
     logAction('token_deleted', { name: token.name, tokenHash }, id);
     
@@ -1159,19 +922,19 @@ app.put('/api/tokens/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const { name } = req.body;
   const tokens = getTokens();
-  const index = tokens.findIndex(t => getTokenHashSync(t.token) === id);
+  const token = tokens.find(t => getTokenHashSync(t.token) === id);
   
-  if (index === -1) {
+  if (!token) {
     return res.status(404).json({ error: 'Token not found' });
   }
   
   if (name) {
-    tokens[index].name = name;
-    saveTokens(tokens);
+    updateToken(token.token, { name });
     logAction('token_updated', { name }, id);
   }
   
-  res.json({ success: true, token: tokens[index] });
+  const updatedToken = getTokenByToken(token.token);
+  res.json({ success: true, token: updatedToken });
 });
 
 // Получить список каналов
@@ -1257,7 +1020,7 @@ app.get('/api/channels', requireAuth, async (req, res) => {
               if (!token) {
                 const tokens = getTokens();
                 const defaultToken = tokens.find(t => t.isDefault);
-                token = defaultToken ? defaultToken.token : process.env.TELEGRAM_BOT_TOKEN;
+                token = defaultToken ? defaultToken.token : null;
               }
               
               if (token) {
@@ -1355,11 +1118,13 @@ app.post('/api/channels/import', requireAuth, async (req, res) => {
     
     for (const channel of validChannels) {
       if (!merged.find(c => c.id === channel.id)) {
-        merged.push(channel);
+        createChannel({
+          ...channel,
+          tokenHash,
+          createdAt: new Date().toISOString()
+        });
       }
     }
-
-    saveChannels(merged, tokenHash);
     logAction('channels_imported', { count: validChannels.length, errors }, tokenHash);
 
     res.json({ success: true, imported: validChannels.length, errors });
@@ -1431,12 +1196,13 @@ app.post('/api/channels', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Channel already exists' });
     }
 
-    channels.push({ 
-      id: channelId, 
+    createChannel({
+      id: channelId,
       name: finalChannelName,
-      tags: tags || []
+      tags: tags || [],
+      tokenHash,
+      createdAt: new Date().toISOString()
     });
-    saveChannels(channels, tokenHash);
     logAction('channel_added', { channelId, channelName: finalChannelName }, tokenHash);
 
     res.json({ success: true, channels });
@@ -1458,10 +1224,9 @@ app.put('/api/channels/:channelId', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Channel not found' });
   }
 
-  if (name) channels[index].name = name;
-  if (tags) channels[index].tags = tags;
-
-  saveChannels(channels, tokenHash);
+  if (name || tags) {
+    updateChannel(channelId, { name, tags });
+  }
   logAction('channel_updated', { channelId }, tokenHash);
   res.json({ success: true, channel: channels[index] });
 });
@@ -1471,15 +1236,13 @@ app.delete('/api/channels/:channelId', requireAuth, (req, res) => {
   const { channelId } = req.params;
   const decodedChannelId = decodeURIComponent(channelId);
   const tokenHash = getTokenHashFromRequest(req);
-  const channels = getChannels(tokenHash);
-  const filtered = channels.filter(c => c.id !== decodedChannelId);
+  const channel = getChannelById(decodedChannelId);
   
-  
-  if (channels.length === filtered.length) {
+  if (!channel || channel.tokenHash !== tokenHash) {
     return res.status(404).json({ error: 'Channel not found' });
   }
 
-  saveChannels(filtered, tokenHash);
+  deleteChannel(decodedChannelId);
   logAction('channel_deleted', { channelId: decodedChannelId }, tokenHash);
   res.json({ success: true, channels: filtered });
 });
@@ -1552,8 +1315,10 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         } : null
       };
       
-      scheduledPosts.push(postData);
-      saveScheduledPosts(scheduledPosts, tokenHash);
+      createScheduledPost({
+        ...postData,
+        tokenHash
+      });
       logAction('post_scheduled', { 
         postId: postData.id, 
         scheduledAt: postData.scheduledAt,
@@ -1682,17 +1447,13 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
 
     // Сохраняем в историю
     if (historyEntries.length > 0) {
-      savePostsHistory([{
+      addPostsHistory([{
         text,
         files: files.map(f => f.originalname),
-        channelIds: channels,
+        channels: channels,
         results: historyEntries,
         timestamp: new Date().toISOString(),
-        author: user ? {
-          id: user.id,
-          username: user.username,
-          name: user.name
-        } : null
+        userId: user ? user.id : null
       }], tokenHash);
     }
 
@@ -1758,29 +1519,32 @@ app.delete('/api/posts/history', requireAuth, (req, res) => {
       const maxAge = parseInt(olderThanDays) * 24 * 60 * 60 * 1000;
       const now = Date.now();
       const history = getPostsHistory(tokenHash);
+      const beforeCount = history.length;
       const filtered = history.filter(post => {
         const postDate = new Date(post.timestamp).getTime();
         return (now - postDate) < maxAge;
       });
       
-      const file = getPostsHistoryFile(tokenHash);
-      fs.writeFileSync(file, JSON.stringify(filtered, null, 2));
-      logAction('history_cleared', { olderThanDays, removed: history.length - filtered.length }, tokenHash);
+      // Удаляем старые записи из БД
+      const cutoffDate = new Date(Date.now() - maxAge).toISOString();
+      deleteOldPostsHistory(tokenHash, cutoffDate);
+      
+      logAction('history_cleared', { olderThanDays, removed: beforeCount - filtered.length }, tokenHash);
       
       res.json({ 
         success: true, 
-        removed: history.length - filtered.length,
+        removed: beforeCount - filtered.length,
         remaining: filtered.length 
       });
     } else {
       // Удаляем всю историю
-      const file = getPostsHistoryFile(tokenHash);
       const history = getPostsHistory(tokenHash);
+      const count = history.length;
       
-      fs.writeFileSync(file, JSON.stringify([], null, 2));
-      logAction('history_cleared', { all: true, removed: history.length }, tokenHash);
+      deleteAllPostsHistory(tokenHash);
+      logAction('history_cleared', { all: true, removed: count }, tokenHash);
       
-      res.json({ success: true, removed: history.length });
+      res.json({ success: true, removed: count });
     }
   } catch (error) {
     console.error('[API] Error clearing history:', error);
@@ -1811,8 +1575,10 @@ app.post('/api/channel-groups', requireAuth, (req, res) => {
     createdAt: new Date().toISOString()
   };
   
-  groups.push(newGroup);
-  saveChannelGroups(groups, tokenHash);
+  createChannelGroup({
+    ...newGroup,
+    tokenHash
+  });
   logAction('channel_group_created', { groupId: newGroup.id, name, channelCount: channelIds.length }, tokenHash);
   
   res.json({ success: true, group: newGroup });
@@ -1823,15 +1589,7 @@ app.delete('/api/channel-groups/:id', requireAuth, (req, res) => {
   const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
   
-  const groups = getChannelGroups(tokenHash);
-  const filtered = groups.filter(g => g.id !== decodedId);
-  
-  
-  if (filtered.length === groups.length) {
-    return res.status(404).json({ error: 'Group not found' });
-  }
-  
-  saveChannelGroups(filtered, tokenHash);
+  deleteChannelGroup(decodedId);
   logAction('channel_group_deleted', { groupId: decodedId }, tokenHash);
   
   res.json({ success: true });
@@ -1888,8 +1646,10 @@ app.post('/api/recurring-posts', requireAuth, (req, res) => {
     } : null
   };
   
-  posts.push(newPost);
-  saveRecurringPosts(posts, tokenHash);
+  createRecurringPost({
+    ...newPost,
+    tokenHash
+  });
   logAction('recurring_post_created', { 
     postId: newPost.id, 
     recurrence, 
@@ -1912,19 +1672,23 @@ app.put('/api/recurring-posts/:id', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Recurring post not found' });
   }
   
-  if (enabled !== undefined) posts[index].enabled = enabled;
-  if (text !== undefined) posts[index].text = text;
-  if (channelIds !== undefined) posts[index].channelIds = channelIds;
-  if (recurrence !== undefined) posts[index].recurrence = recurrence;
-  if (time !== undefined) posts[index].time = time;
-  if (dayOfWeek !== undefined) posts[index].dayOfWeek = dayOfWeek;
-  if (parseMode !== undefined) posts[index].parseMode = parseMode;
-  if (buttons !== undefined) posts[index].buttons = buttons;
+  const updates = {};
+  if (enabled !== undefined) updates.enabled = enabled;
+  if (text !== undefined) updates.text = text;
+  if (channelIds !== undefined) updates.channels = channelIds;
+  if (recurrence !== undefined) updates.recurrence = recurrence;
+  if (time !== undefined) updates.time = time;
+  if (dayOfWeek !== undefined) updates.dayOfWeek = dayOfWeek;
+  if (buttons !== undefined) updates.buttons = buttons;
   
   // Пересчитываем следующую дату
-  posts[index].nextScheduledAt = getNextScheduledDate(posts[index]).toISOString();
+  const post = getRecurringPostById(id);
+  if (post) {
+    const updatedPost = { ...post, ...updates };
+    updates.nextScheduledDate = getNextScheduledDate(updatedPost).toISOString();
+  }
   
-  saveRecurringPosts(posts, tokenHash);
+  updateRecurringPost(id, updates);
   logAction('recurring_post_updated', { postId: id }, tokenHash);
   
   res.json({ success: true, post: posts[index] });
@@ -1935,15 +1699,7 @@ app.delete('/api/recurring-posts/:id', requireAuth, (req, res) => {
   const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
   
-  const posts = getRecurringPosts(tokenHash);
-  const filtered = posts.filter(p => p.id !== decodedId);
-  
-  
-  if (filtered.length === posts.length) {
-    return res.status(404).json({ error: 'Recurring post not found' });
-  }
-  
-  saveRecurringPosts(filtered, tokenHash);
+  deleteRecurringPost(decodedId);
   logAction('recurring_post_deleted', { postId: decodedId }, tokenHash);
   
   res.json({ success: true });
@@ -1962,9 +1718,12 @@ app.post('/api/templates', requireAuth, (req, res) => {
   if (!name || !text) {
     return res.status(400).json({ error: 'Name and text are required' });
   }
-  const templates = getTemplates(tokenHash);
-  templates.push({ id: Date.now().toString(), name, text, createdAt: new Date().toISOString() });
-  saveTemplates(templates, tokenHash);
+  createTemplate({
+    id: Date.now().toString(),
+    tokenHash,
+    text,
+    createdAt: new Date().toISOString()
+  });
   logAction('template_created', { name }, tokenHash);
   res.json({ success: true, templates });
 });
@@ -1973,14 +1732,13 @@ app.delete('/api/templates/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
-  const templates = getTemplates(tokenHash);
-  const filtered = templates.filter(t => t.id !== decodedId);
+  const template = getTemplates(tokenHash).find(t => t.id === decodedId);
   
-  
-  if (templates.length === filtered.length) {
+  if (!template) {
     return res.status(404).json({ error: 'Template not found' });
   }
-  saveTemplates(filtered, tokenHash);
+  
+  deleteTemplate(decodedId);
   logAction('template_deleted', { id: decodedId }, tokenHash);
   res.json({ success: true });
 });
@@ -2053,18 +1811,20 @@ app.put('/api/scheduled-posts/:id', requireAuth, async (req, res) => {
     }
     
     // Обновляем поля если указаны
-    if (text !== undefined) post.text = text;
+    const updates = {};
+    if (text !== undefined) updates.text = text;
     if (channelIds !== undefined) {
-      const parsed = Array.isArray(channelIds) ? channelIds : JSON.parse(channelIds);
-      post.channelIds = parsed;
+      updates.channels = Array.isArray(channelIds) ? channelIds : JSON.parse(channelIds);
     }
-    if (parseMode !== undefined) post.parseMode = parseMode;
+    if (parseMode !== undefined) updates.parseMode = parseMode;
     if (buttons !== undefined) {
-      post.buttons = buttons ? (Array.isArray(buttons) ? buttons : JSON.parse(buttons)) : null;
+      updates.buttons = buttons ? (Array.isArray(buttons) ? buttons : JSON.parse(buttons)) : null;
+    }
+    if (post.scheduledAt) {
+      updates.scheduledTime = post.scheduledAt;
     }
     
-    scheduled[index] = post;
-    saveScheduledPosts(scheduled, tokenHash);
+    updateScheduledPost(id, updates);
     logAction('scheduled_post_updated', { postId: id }, tokenHash);
     
     res.json({ success: true, post });
@@ -2078,15 +1838,7 @@ app.delete('/api/scheduled-posts/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const decodedId = decodeURIComponent(id);
   const tokenHash = getTokenHashFromRequest(req);
-  const scheduled = getScheduledPosts(tokenHash);
-  const filtered = scheduled.filter(p => p.id !== decodedId);
-  
-  
-  if (scheduled.length === filtered.length) {
-    return res.status(404).json({ error: 'Scheduled post not found' });
-  }
-  
-  saveScheduledPosts(filtered, tokenHash);
+  deleteScheduledPost(decodedId);
   logAction('scheduled_post_deleted', { id: decodedId }, tokenHash);
   res.json({ success: true });
 });
@@ -2463,15 +2215,13 @@ cron.schedule('* * * * *', async () => {
         
         // Сохраняем в историю
         if (historyEntries.length > 0) {
-          savePostsHistory([{
+          addPostsHistory([{
             text: post.text,
             files: post.files ? post.files.map(f => f.originalname || 'file') : [],
-            channelIds: post.channelIds,
+            channels: post.channelIds,
             results: historyEntries,
             timestamp: new Date().toISOString(),
-            scheduled: true,
-            scheduledAt: post.scheduledAt,
-            author: post.author || null // Сохраняем автора из запланированного поста
+            userId: post.author ? post.author.id : null
           }], tokenHash);
         }
 
@@ -2488,12 +2238,10 @@ cron.schedule('* * * * *', async () => {
 
       // Удаляем из запланированных (только если это не повторяющийся пост)
       if (!post.recurringPostId) {
-        const remaining = scheduled.filter(p => p.id !== post.id);
-        saveScheduledPosts(remaining, tokenHash);
+        deleteScheduledPost(post.id);
       } else {
         // Для повторяющихся постов просто удаляем этот экземпляр
-        const remaining = scheduled.filter(p => p.id !== post.id);
-        saveScheduledPosts(remaining, tokenHash);
+        deleteScheduledPost(post.id);
       }
       logAction('scheduled_post_sent', { postId: post.id, channelIds: post.channelIds, recurring: !!post.recurringPostId }, tokenHash);
       } catch (error) {

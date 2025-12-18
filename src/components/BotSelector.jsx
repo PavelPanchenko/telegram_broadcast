@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { toast } from '../utils/toast';
 import { useTokens, useValidateToken, useAddToken, useDeleteToken } from '../hooks/useTokens';
 
-function BotSelector({ onBotChange, onTokensChange }) {
+function BotSelector({ onBotChange, userRole }) {
   const [selectedToken, setSelectedToken] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
@@ -10,6 +10,8 @@ function BotSelector({ onBotChange, onTokensChange }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [tokenToDelete, setTokenToDelete] = useState(null);
   const fetchNameTimeoutRef = useRef(null);
+  const tokensInitializedRef = useRef(false);
+  const prevSelectedTokenRef = useRef(null);
 
   // React Query хуки
   const { data: tokens = [], isLoading: loading } = useTokens();
@@ -17,12 +19,7 @@ function BotSelector({ onBotChange, onTokensChange }) {
   const addToken = useAddToken();
   const deleteToken = useDeleteToken();
 
-  // Уведомляем родительский компонент об изменении токенов
-  useEffect(() => {
-    if (onTokensChange && tokens.length > 0) {
-      onTokensChange(tokens);
-    }
-  }, [tokens, onTokensChange]);
+  // Токены уже доступны через React Query в родительском компоненте
 
   // Автоматическое получение названия при вводе токена
   useEffect(() => {
@@ -46,30 +43,43 @@ function BotSelector({ onBotChange, onTokensChange }) {
   }, [tokenInput, showAddForm]);
 
   useEffect(() => {
-    if (selectedToken) {
+    if (selectedToken && selectedToken !== prevSelectedTokenRef.current) {
       localStorage.setItem('selectedBotToken', selectedToken);
-      if (onBotChange) {
-        onBotChange(selectedToken);
-      }
+      onBotChange?.(selectedToken);
+      prevSelectedTokenRef.current = selectedToken;
     }
-  }, [selectedToken, onBotChange]);
+  }, [selectedToken]); // onBotChange стабилен благодаря useCallback в родителе
 
   useEffect(() => {
     // Проверяем, что tokens - это массив
-    if (!Array.isArray(tokens)) {
+    if (!Array.isArray(tokens) || tokens.length === 0) {
       return;
     }
     
-    const saved = localStorage.getItem('selectedBotToken');
-    if (saved && tokens.find(t => t.id === saved)) {
-      setSelectedToken(saved);
-    } else if (tokens.length > 0) {
-      const defaultToken = tokens.find(t => t.isDefault) || tokens[0];
-      if (defaultToken) {
-        setSelectedToken(defaultToken.id);
+    // Инициализируем токен только один раз при первой загрузке
+    if (!tokensInitializedRef.current) {
+      const saved = localStorage.getItem('selectedBotToken');
+      if (saved && tokens.find(t => t.id === saved)) {
+        setSelectedToken(saved);
+      } else {
+        const defaultToken = tokens.find(t => t.isDefault) || tokens[0];
+        if (defaultToken) {
+          setSelectedToken(defaultToken.id);
+        }
+      }
+      tokensInitializedRef.current = true;
+    } else {
+      // Если токен был удален, выбираем другой
+      if (selectedToken && !tokens.find(t => t.id === selectedToken)) {
+        const defaultToken = tokens.find(t => t.isDefault) || tokens[0];
+        if (defaultToken) {
+          setSelectedToken(defaultToken.id);
+        } else {
+          setSelectedToken(null);
+        }
       }
     }
-  }, [tokens]);
+  }, [tokens, selectedToken]);
 
   const handleFetchBotName = async () => {
     if (!tokenInput.trim()) {
@@ -259,13 +269,19 @@ function BotSelector({ onBotChange, onTokensChange }) {
                   e.stopPropagation();
                   handleDeleteClick(token.id);
                 }}
-                disabled={tokens.length === 1}
+                disabled={userRole !== 'admin' && tokens.length === 1}
                 className={`flex-shrink-0 text-base px-2 py-1.5 rounded transition-colors ${
-                  tokens.length === 1
+                  (userRole !== 'admin' && tokens.length === 1)
                     ? 'text-gray-400 cursor-not-allowed opacity-50'
                     : 'text-red-600 hover:text-red-700 hover:bg-red-50 active:bg-red-100'
                 }`}
-                title={tokens.length === 1 ? 'Нельзя удалить последнего бота' : 'Удалить бота'}
+                title={
+                  userRole === 'admin' 
+                    ? 'Удалить бота' 
+                    : tokens.length === 1 
+                      ? 'Нельзя удалить последнего бота' 
+                      : 'Удалить бота'
+                }
               >
                 🗑️
               </button>

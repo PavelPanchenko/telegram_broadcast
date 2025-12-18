@@ -20,6 +20,7 @@ services:
     volumes:
       # Монтируем директорию с данными для сохранения между перезапусками
       - ./server/data:/app/server/data
+      - ./server/database.db:/app/server/database.db
       - ./uploads:/app/uploads
     networks:
       - telegram-broadcast-network

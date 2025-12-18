@@ -951,7 +951,20 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
   }
   
   // Не возвращаем полные токены для безопасности, только метаданные
-  const safeTokens = updatedTokens.map(t => {
+  // Важно: для обычных пользователей возвращаем только их токены
+  const tokensToReturn = isAdmin ? updatedTokens : userTokens;
+  
+  const safeTokens = tokensToReturn.map(t => {
+    // Для обычных пользователей дополнительно проверяем доступ
+    if (!isAdmin && t.userId !== userId) {
+      return null; // Пропускаем токены других пользователей
+    }
+    
+    // Пропускаем токены без userId для обычных пользователей
+    if (!isAdmin && !t.userId) {
+      return null;
+    }
+    
     const tokenData = {
       id: getTokenHashSync(t.token),
       name: t.name,
@@ -976,7 +989,8 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
     }
     
     return tokenData;
-  });
+  }).filter(t => t !== null); // Удаляем null значения
+  
   res.json(safeTokens);
 });
 
@@ -2121,6 +2135,24 @@ app.get('/api/logs', requireAuth, (req, res) => {
 
 // Проверка статуса бота
 app.get('/api/bot-status', requireAuth, async (req, res) => {
+  const userId = req.session.user.id;
+  const tokenHash = getTokenHashFromRequest(req);
+  
+  // Проверяем доступ к токену для обычных пользователей
+  if (tokenHash && tokenHash !== 'default') {
+    const users = getUsers();
+    const user = users.find(u => u.id === userId);
+    
+    if (user?.role !== 'admin') {
+      if (!canAccessToken(userId, tokenHash)) {
+        return res.json({ 
+          initialized: false, 
+          error: 'У вас нет доступа к этому боту' 
+        });
+      }
+    }
+  }
+  
   const bot = getBotFromRequest(req);
   
   if (!bot) {

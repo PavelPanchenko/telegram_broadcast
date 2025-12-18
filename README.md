@@ -190,6 +190,135 @@ _italic_
 - **Frontend** → Vercel (см. инструкцию ниже)
 - **Backend** → Railway или Render (см. инструкцию ниже)
 
+#### Вариант 3: Развертывание на VPS через Docker Compose
+
+Этот вариант позволяет развернуть приложение на собственном VPS сервере в контейнере Docker.
+
+**Требования:**
+- VPS сервер с установленными Docker и Docker Compose
+- Минимум 1 ГБ RAM, 2 ГБ рекомендуется
+- Минимум 10 ГБ свободного места на диске
+
+**Шаги развертывания:**
+
+1. **Подключитесь к вашему VPS:**
+   ```bash
+   ssh user@your-vps-ip
+   ```
+
+2. **Установите Docker и Docker Compose** (если еще не установлены):
+   ```bash
+   # Для Ubuntu/Debian
+   curl -fsSL https://get.docker.com -o get-docker.sh
+   sh get-docker.sh
+   sudo usermod -aG docker $USER
+   
+   # Установка Docker Compose
+   sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+   sudo chmod +x /usr/local/bin/docker-compose
+   ```
+
+3. **Клонируйте репозиторий на сервер:**
+   ```bash
+   git clone <your-repo-url> telegram-broadcast
+   cd telegram-broadcast
+   ```
+
+4. **Создайте файл `.env` в корне проекта:**
+   ```bash
+   nano .env
+   ```
+   
+   Добавьте следующие переменные:
+   ```env
+   TELEGRAM_BOT_TOKEN=your_bot_token_here
+   SESSION_SECRET=your_random_secret_key_here
+   ```
+
+5. **Создайте необходимые директории:**
+   ```bash
+   mkdir -p server/data uploads
+   ```
+
+6. **Запустите приложение через Docker Compose:**
+   ```bash
+   docker-compose up -d --build
+   ```
+
+7. **Проверьте статус контейнера:**
+   ```bash
+   docker-compose ps
+   docker-compose logs -f
+   ```
+
+8. **Настройте Nginx (опционально, для использования домена):**
+   
+   Установите Nginx:
+   ```bash
+   sudo apt update
+   sudo apt install nginx
+   ```
+   
+   Создайте конфигурацию:
+   ```bash
+   sudo nano /etc/nginx/sites-available/telegram-broadcast
+   ```
+   
+   Добавьте конфигурацию:
+   ```nginx
+   server {
+       listen 80;
+       server_name your-domain.com;
+   
+       location / {
+           proxy_pass http://localhost:5001;
+           proxy_http_version 1.1;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection 'upgrade';
+           proxy_set_header Host $host;
+           proxy_cache_bypass $http_upgrade;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+   }
+   ```
+   
+   Активируйте конфигурацию:
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/telegram-broadcast /etc/nginx/sites-enabled/
+   sudo nginx -t
+   sudo systemctl reload nginx
+   ```
+
+9. **Настройте SSL сертификат (опционально, через Let's Encrypt):**
+   ```bash
+   sudo apt install certbot python3-certbot-nginx
+   sudo certbot --nginx -d your-domain.com
+   ```
+
+**Управление контейнером:**
+
+- **Остановить:** `docker-compose down`
+- **Перезапустить:** `docker-compose restart`
+- **Обновить приложение:**
+  ```bash
+  git pull
+  docker-compose up -d --build
+  ```
+- **Просмотр логов:** `docker-compose logs -f`
+- **Очистка старых образов:** `docker system prune -a`
+
+**Важные замечания:**
+
+- Данные сохраняются в `./server/data` и `./uploads` на хосте благодаря volume монтированию
+- При обновлении приложения данные не теряются
+- Убедитесь, что порт 5001 открыт в firewall:
+  ```bash
+  sudo ufw allow 5001/tcp
+  ```
+- Для продакшн использования рекомендуется настроить автоматические бэкапы директории `server/data`
+
 ### Деплой Frontend на Vercel
 
 1. **Подготовка проекта:**

@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  telegram-broadcast:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-broadcast
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - PORT=5001
+      - SESSION_SECRET=${SESSION_SECRET}
+      - NODE_ENV=production
+    volumes:
+      # Монтируем директорию с данными для сохранения между перезапусками
+      - ./server/data:/app/server/data
+      - ./uploads:/app/uploads
+    networks:
+      - telegram-broadcast-network
+
+networks:
+  telegram-broadcast-network:
+    driver: bridge
+

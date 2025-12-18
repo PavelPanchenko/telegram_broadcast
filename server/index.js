@@ -26,6 +26,15 @@ const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/quicktime'];
 const ALLOWED_DOC_TYPES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 
+// CORS должен быть первым, чтобы preflight запросы проходили
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
+
+// Парсинг JSON
+app.use(express.json({ limit: '50mb' }));
+
 // Настройка сессий
 // secure: true только если явно указано в переменных окружения или используется HTTPS
 const isSecure = process.env.COOKIE_SECURE === 'true' || 
@@ -42,19 +51,13 @@ app.use(session({
   }
 }));
 
-// Rate limiting
+// Rate limiting (после CORS, чтобы не блокировать preflight запросы)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 минут
-  max: 100 // максимум 100 запросов
+  max: 100, // максимум 100 запросов
+  skip: (req) => req.method === 'OPTIONS' // Пропускаем preflight запросы
 });
 app.use('/api/', limiter);
-
-// Middleware
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-app.use(express.json({ limit: '50mb' }));
 
 // Настройка multer для загрузки файлов
 const storage = multer.diskStorage({
@@ -710,10 +713,15 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => {
-  if (req.session && req.session.user) {
-    res.json({ user: req.session.user });
-  } else {
-    res.status(401).json({ error: 'Not authenticated' });
+  try {
+    if (req.session && req.session.user) {
+      res.json({ user: req.session.user });
+    } else {
+      res.status(401).json({ error: 'Not authenticated' });
+    }
+  } catch (error) {
+    console.error('[Auth] Error in /api/auth/me:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

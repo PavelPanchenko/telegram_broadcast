@@ -53,10 +53,16 @@ function App() {
       if (response.ok) {
         const data = await parseJsonResponse(response);
         setUser(data.user);
+      } else if (response.status === 401) {
+        // 401 - не авторизован, это нормально
+        setUser(null);
       } else {
+        // Другие ошибки
+        console.error('Auth check failed:', response.status, response.statusText);
         setUser(null);
       }
     } catch (error) {
+      // Сетевые ошибки или ошибки парсинга
       console.error('Auth check error:', error);
       setUser(null);
     } finally {

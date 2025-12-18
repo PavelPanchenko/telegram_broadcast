@@ -125,14 +125,6 @@ function App() {
     setActiveTab('post');
   };
 
-  // Загружаем каналы при переключении на вкладку "Каналы", если они еще не загружены
-  useEffect(() => {
-    if (activeTab === 'channels' && selectedToken && channels.length === 0 && !loading) {
-      fetchChannels();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
-
   const tabs = [
     { id: 'post', label: 'Создать пост' },
     { id: 'channels', label: 'Каналы' },

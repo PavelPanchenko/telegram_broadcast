@@ -18,13 +18,32 @@ export function usePostsHistory(token, options = {}) {
         url += `&olderThanDays=${olderThanDays}`;
       }
       
-      const response = await fetch(url, {
-        headers,
-        credentials: 'include',
-      });
-      return parseJsonResponse(response);
+      try {
+        const response = await fetch(url, {
+          headers,
+          credentials: 'include',
+        });
+        
+        if (!response.ok) {
+          if (response.status === 401) {
+            return [];
+          }
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await parseJsonResponse(response);
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.error('[usePostsHistory] Error fetching history:', error);
+        return [];
+      }
     },
     enabled: !!token,
+    retry: (failureCount, error) => {
+      // Не повторяем запрос при 401
+      if (error?.response?.status === 401) return false;
+      return failureCount < 3;
+    },
   });
 }
 

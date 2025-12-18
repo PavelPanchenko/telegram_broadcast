@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useChannels } from './hooks/useChannels';
 import { useTokens } from './hooks/useTokens';
 import ChannelManager from './components/ChannelManager';
@@ -25,7 +26,8 @@ function App() {
   const [selectedToken, setSelectedToken] = useState(null);
   
   // Получаем токены напрямую из React Query
-  const { data: tokens = [] } = useTokens();
+  const { data: tokens = [], isLoading: tokensLoading } = useTokens();
+  const queryClient = useQueryClient();
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('darkMode');
     return saved ? JSON.parse(saved) : false;
@@ -55,18 +57,24 @@ function App() {
       if (response.ok) {
         const data = await parseJsonResponse(response);
         setUser(data.user);
+        // Инвалидируем кэш токенов после успешной проверки авторизации
+        queryClient.invalidateQueries({ queryKey: ['tokens'] });
       } else if (response.status === 401) {
         // 401 - не авторизован, это нормально
         setUser(null);
+        // Очищаем кэш токенов при выходе
+        queryClient.setQueryData(['tokens'], []);
       } else {
         // Другие ошибки
         console.error('Auth check failed:', response.status, response.statusText);
         setUser(null);
+        queryClient.setQueryData(['tokens'], []);
       }
     } catch (error) {
       // Сетевые ошибки или ошибки парсинга
       console.error('Auth check error:', error);
       setUser(null);
+      queryClient.setQueryData(['tokens'], []);
     } finally {
       setCheckingAuth(false);
     }
@@ -74,6 +82,8 @@ function App() {
 
   const handleLogin = (userData) => {
     setUser(userData);
+    // Инвалидируем кэш токенов после успешного логина
+    queryClient.invalidateQueries({ queryKey: ['tokens'] });
   };
 
   const handleLogout = async () => {
@@ -83,8 +93,13 @@ function App() {
         credentials: 'include',
       });
       setUser(null);
+      // Очищаем кэш токенов при выходе
+      queryClient.setQueryData(['tokens'], []);
+      queryClient.invalidateQueries({ queryKey: ['tokens'] });
     } catch (error) {
       console.error('Logout error:', error);
+      // Очищаем кэш даже при ошибке
+      queryClient.setQueryData(['tokens'], []);
     }
   };
 
@@ -94,6 +109,21 @@ function App() {
   // Используем данные напрямую из React Query, не дублируем в state
   const channels = channelsData;
   const loading = channelsLoading;
+
+  // Обработка события переключения вкладок
+  useEffect(() => {
+    const handleSwitchTab = (event) => {
+      const tabId = event.detail;
+      if (tabId) {
+        setActiveTab(tabId);
+      }
+    };
+
+    window.addEventListener('switchTab', handleSwitchTab);
+    return () => {
+      window.removeEventListener('switchTab', handleSwitchTab);
+    };
+  }, []);
 
   // Обработка события показа групп каналов из PostForm
   useEffect(() => {
@@ -195,7 +225,7 @@ function App() {
         </div>
 
         <BotSelector onBotChange={handleBotChange} userRole={user?.role} />
-        <BotStatus token={selectedToken} hasTokens={tokens && tokens.length > 0} />
+        <BotStatus token={selectedToken} hasTokens={tokens && tokens.length > 0} tokensLoading={tokensLoading} />
 
         {/* Навигация */}
         <div className="mb-4 sm:mb-6 border-b border-gray-200 dark:border-slate-700">

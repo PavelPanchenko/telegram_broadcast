@@ -1299,30 +1299,42 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         };
       }) : [];
       
+      const parsedChannelIds = JSON.parse(channelIds);
+      
       const postData = {
         id: Date.now().toString(),
         text,
-        channelIds: JSON.parse(channelIds),
+        channels: parsedChannelIds, // Используем channels вместо channelIds для БД
         files: filesData,
         parseMode,
         buttons: buttons ? JSON.parse(buttons) : null,
-        scheduledAt: scheduledDate.toISOString(), // Сохраняем в ISO формате
+        scheduledTime: scheduledDate.toISOString(), // Используем scheduledTime для БД
+        scheduledAt: scheduledDate.toISOString(), // Оставляем для ответа
         createdAt: new Date().toISOString(),
-        author: user ? {
-          id: user.id,
-          username: user.username,
-          name: user.name
-        } : null
+        userId: user ? user.id : null
       };
       
-      createScheduledPost({
-        ...postData,
-        tokenHash
-      });
+      try {
+        createScheduledPost({
+          ...postData,
+          tokenHash
+        });
+      } catch (dbError) {
+        console.error('[API] Error creating scheduled post:', dbError);
+        // Удаляем файлы при ошибке БД
+        if (req.files) {
+          req.files.forEach(file => {
+            try {
+              if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            } catch (e) {}
+          });
+        }
+        return res.status(500).json({ error: 'Failed to create scheduled post: ' + dbError.message });
+      }
       logAction('post_scheduled', { 
         postId: postData.id, 
         scheduledAt: postData.scheduledAt,
-        channelIds: postData.channelIds,
+        channelIds: parsedChannelIds,
         filesCount: filesData.length
       });
       
@@ -1453,7 +1465,8 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         channels: channels,
         results: historyEntries,
         timestamp: new Date().toISOString(),
-        userId: user ? user.id : null
+        userId: user ? user.id : null,
+        parseMode: parseMode || 'HTML'
       }], tokenHash);
     }
 
@@ -1750,12 +1763,16 @@ app.get('/api/scheduled-posts', requireAuth, (req, res) => {
   // Добавляем информацию о времени до отправки
   const now = new Date();
   const enriched = scheduled.map(post => {
-    const scheduledDate = new Date(post.scheduledAt);
+    // Используем scheduledTime из БД или scheduledAt (для обратной совместимости)
+    const scheduledTime = post.scheduledTime || post.scheduledAt;
+    const scheduledDate = new Date(scheduledTime);
     const diff = scheduledDate - now;
     return {
       ...post,
+      scheduledAt: scheduledTime, // Убеждаемся, что scheduledAt всегда есть
       timeUntilSend: diff > 0 ? Math.floor(diff / 1000 / 60) : 0, // минуты
-      isOverdue: diff < 0
+      isOverdue: diff < 0,
+      channelIds: post.channels || post.channelIds || [] // Добавляем channelIds для обратной совместимости
     };
   });
   res.json(enriched);
@@ -2069,18 +2086,25 @@ cron.schedule('* * * * *', async () => {
     const now = new Date();
     const toSend = scheduled.filter(p => {
       try {
-        const scheduledDate = new Date(p.scheduledAt);
+        // Используем scheduledTime из БД или scheduledAt (для обратной совместимости)
+        const scheduledTime = p.scheduledTime || p.scheduledAt;
+        if (!scheduledTime) {
+          console.error(`[Scheduler] No scheduled time for post ${p.id}`);
+          return false;
+        }
+        const scheduledDate = new Date(scheduledTime);
         return scheduledDate <= now && !isNaN(scheduledDate.getTime());
       } catch (e) {
-        console.error(`[Scheduler] Invalid date for post ${p.id}:`, p.scheduledAt);
+        console.error(`[Scheduler] Invalid date for post ${p.id}:`, p.scheduledTime || p.scheduledAt, e);
         return false;
       }
     });
 
     if (toSend.length === 0) {
-      return; // Нет постов для отправки
+      continue; // Нет постов для отправки для этого токена, переходим к следующему
     }
-
+    
+    console.log(`[Scheduler] Found ${toSend.length} posts to send for token ${tokenHash}`);
 
     for (const post of toSend) {
       const historyEntries = [];
@@ -2103,8 +2127,17 @@ cron.schedule('* * * * *', async () => {
           reply_markup: post.buttons ? { inline_keyboard: post.buttons } : undefined
         };
 
+        // Получаем каналы: используем channels из БД или channelIds (для обратной совместимости)
+        const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+        
+        if (channelIds.length === 0) {
+          console.error(`[Scheduler] No channels for post ${post.id}`);
+          deleteScheduledPost(post.id);
+          continue;
+        }
+        
         // Отправляем пост с файлами если есть
-        for (const channelId of post.channelIds) {
+        for (const channelId of channelIds) {
           try {
             if (post.files && post.files.length > 0) {
               const images = post.files.filter(f => ALLOWED_IMAGE_TYPES.includes(f.mimetype));
@@ -2217,11 +2250,12 @@ cron.schedule('* * * * *', async () => {
         if (historyEntries.length > 0) {
           addPostsHistory([{
             text: post.text,
-            files: post.files ? post.files.map(f => f.originalname || 'file') : [],
-            channels: post.channelIds,
+            files: post.files ? post.files.map(f => f.originalname || f.name || 'file') : [],
+            channels: channelIds,
             results: historyEntries,
             timestamp: new Date().toISOString(),
-            userId: post.author ? post.author.id : null
+            userId: post.userId || (post.author ? post.author.id : null),
+            parseMode: post.parseMode || 'HTML'
           }], tokenHash);
         }
 
@@ -2243,7 +2277,7 @@ cron.schedule('* * * * *', async () => {
         // Для повторяющихся постов просто удаляем этот экземпляр
         deleteScheduledPost(post.id);
       }
-      logAction('scheduled_post_sent', { postId: post.id, channelIds: post.channelIds, recurring: !!post.recurringPostId }, tokenHash);
+      logAction('scheduled_post_sent', { postId: post.id, channelIds: channelIds, recurring: !!post.recurringPostId }, tokenHash);
       } catch (error) {
         console.error(`[Scheduler] Error processing scheduled post ${post.id} (token: ${tokenHash}):`, error);
         logAction('scheduled_post_error', { postId: post.id, error: error.message }, tokenHash);

@@ -14,6 +14,9 @@ function ScheduledPosts({ token }) {
   const { data: channels = [] } = useChannels(token);
   const deletePost = useDeleteScheduledPost();
 
+  // Убеждаемся, что scheduled - это массив
+  const scheduledPosts = Array.isArray(scheduled) ? scheduled : [];
+
   const handleDeleteClick = (id) => {
     setPostToDelete(id);
     setShowDeleteConfirm(true);
@@ -55,7 +58,7 @@ function ScheduledPosts({ token }) {
   return (
     <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-6">
       <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-3 sm:mb-4">
-        Запланированные посты ({scheduled.length})
+        Запланированные посты ({scheduledPosts.length})
       </h2>
 
       {editingPost && (
@@ -70,11 +73,16 @@ function ScheduledPosts({ token }) {
 
       {loading ? (
         <p className="text-gray-500 dark:text-gray-400">Загрузка...</p>
-      ) : scheduled.length === 0 ? (
+      ) : scheduledPosts.length === 0 ? (
         <p className="text-gray-500 dark:text-gray-400">Нет запланированных постов</p>
       ) : (
         <div className="space-y-1.5 sm:space-y-2">
-          {scheduled.map((post) => (
+          {scheduledPosts.map((post) => {
+            // Обрабатываем каналы: могут быть в формате channels или channelIds
+            const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+            const files = Array.isArray(post.files) ? post.files : [];
+            
+            return (
             <div
               key={post.id}
               className={`p-2 sm:p-3 border rounded-lg ${
@@ -87,7 +95,7 @@ function ScheduledPosts({ token }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                     <p className="text-xs sm:text-sm font-medium text-gray-900 dark:text-white">
-                      {formatDate(post.scheduledAt)}
+                      {formatDate(post.scheduledAt || post.scheduledTime)}
                     </p>
                     {post.timeUntilSend !== undefined && (
                       <span className={`text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded ${
@@ -99,9 +107,11 @@ function ScheduledPosts({ token }) {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 sm:mt-1">
-                    Создан: {formatDate(post.createdAt)}
-                  </p>
+                  {post.createdAt && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 sm:mt-1">
+                      Создан: {formatDate(post.createdAt)}
+                    </p>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -123,13 +133,15 @@ function ScheduledPosts({ token }) {
                   </button>
                 </div>
               </div>
-              <p className="text-xs sm:text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap line-clamp-2 mt-1 sm:mt-2">
-                {post.text.substring(0, 150)}
-                {post.text.length > 150 && '...'}
-              </p>
+              {post.text && (
+                <p className="text-xs sm:text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap line-clamp-2 mt-1 sm:mt-2">
+                  {post.text.substring(0, 150)}
+                  {post.text.length > 150 && '...'}
+                </p>
+              )}
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                Каналов: {post.channelIds.length}
-                {post.files && post.files.length > 0 && ` • Файлов: ${post.files.length}`}
+                Каналов: {channelIds.length}
+                {files.length > 0 && ` • Файлов: ${files.length}`}
               </p>
               {post.isOverdue && (
                 <p className="text-xs text-red-600 dark:text-red-400 mt-1 font-medium">
@@ -137,7 +149,8 @@ function ScheduledPosts({ token }) {
                 </p>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

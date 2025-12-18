@@ -24,6 +24,8 @@ export function useTokens() {
       return Array.isArray(data) ? data : [];
     },
     retry: false, // Не повторяем запрос при 401
+    staleTime: 0, // Данные считаются устаревшими сразу, чтобы обновлялись после логина
+    refetchOnMount: true, // Всегда обновлять при монтировании
   });
 }
 

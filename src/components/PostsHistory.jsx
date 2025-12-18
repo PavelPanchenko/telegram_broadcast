@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { toast } from '../utils/toast';
 import { usePostsHistory, useDeleteOldPosts } from '../hooks/usePostsHistory';
+import { useChannels } from '../hooks/useChannels';
 
 function PostsHistory({ token, onCopyPost }) {
   const [limit, setLimit] = useState(20);
@@ -14,22 +15,26 @@ function PostsHistory({ token, onCopyPost }) {
   // React Query хуки
   const { data: history = [], isLoading: loading } = usePostsHistory(token, { limit });
   const deleteOldPosts = useDeleteOldPosts();
+  const { data: channels = [], isLoading: channelsLoading } = useChannels(token);
+  const [expandedPosts, setExpandedPosts] = useState(new Set());
+  const [showErrorDetails, setShowErrorDetails] = useState(new Set());
 
   // Фильтрация истории (вычисляется на клиенте)
   const filteredHistory = useMemo(() => {
+    if (!Array.isArray(history)) return [];
     let filtered = [...history];
 
     if (searchQuery.trim()) {
       filtered = filtered.filter(post => 
-        post.text.toLowerCase().includes(searchQuery.toLowerCase())
+        post.text && post.text.toLowerCase().includes(searchQuery.toLowerCase())
       );
     }
 
     if (searchAuthor.trim()) {
       filtered = filtered.filter(post => 
         post.author && (
-          post.author.name.toLowerCase().includes(searchAuthor.toLowerCase()) ||
-          post.author.username.toLowerCase().includes(searchAuthor.toLowerCase())
+          (post.author.name && post.author.name.toLowerCase().includes(searchAuthor.toLowerCase())) ||
+          (post.author.username && post.author.username.toLowerCase().includes(searchAuthor.toLowerCase()))
         )
       );
     }
@@ -81,6 +86,114 @@ function PostsHistory({ token, onCopyPost }) {
     return new Date(dateString).toLocaleString('ru-RU');
   };
 
+  const toggleExpand = (postId) => {
+    setExpandedPosts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleErrorDetails = (postId) => {
+    setShowErrorDetails(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
+  };
+
+  const getChannelName = (channelId) => {
+    const channel = channels.find(c => c.id === channelId);
+    return channel ? (channel.name || channel.username || channelId) : channelId;
+  };
+
+  const handleResend = (post) => {
+    console.log('[PostsHistory] handleResend called with post:', post);
+    console.log('[PostsHistory] Available channels:', channels);
+    console.log('[PostsHistory] Channels loading:', channelsLoading);
+    
+    // Если каналы еще загружаются, ждем
+    if (channelsLoading) {
+      toast.info('Загрузка каналов...');
+      // Ждем загрузки каналов
+      const checkChannels = setInterval(() => {
+        if (!channelsLoading) {
+          clearInterval(checkChannels);
+          handleResend(post); // Повторяем попытку
+        }
+      }, 100);
+      setTimeout(() => clearInterval(checkChannels), 5000); // Таймаут 5 секунд
+      return;
+    }
+    
+    const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+    console.log('[PostsHistory] Channel IDs from post:', channelIds);
+    
+    // Проверяем, что каналы все еще существуют
+    const existingChannels = channelIds.filter(id => channels.some(c => c.id === id));
+    console.log('[PostsHistory] Existing channels after filter:', existingChannels);
+    
+    if (existingChannels.length === 0) {
+      toast.error('Каналы из этого поста больше не доступны');
+      return;
+    }
+
+    // Обрабатываем кнопки: если это массив массивов, преобразуем в плоский массив
+    let processedButtons = [];
+    if (post.buttons && Array.isArray(post.buttons)) {
+      if (post.buttons.length > 0 && Array.isArray(post.buttons[0])) {
+        // Формат [[{text, url}]] - преобразуем в [{text, url}]
+        processedButtons = post.buttons.flat();
+      } else {
+        // Формат [{text, url}]
+        processedButtons = post.buttons;
+      }
+    }
+
+    const postData = {
+      text: post.text || '',
+      channelIds: existingChannels,
+      parseMode: post.parseMode || 'HTML',
+      buttons: processedButtons
+    };
+
+    console.log('[PostsHistory] Sending copyPost event with data:', postData);
+
+    // Отправляем событие для копирования поста
+    // Используем задержку, чтобы убедиться, что обработчик зарегистрирован
+    // Также отправляем событие несколько раз с небольшой задержкой для надежности
+    const sendEvent = () => {
+      const event = new CustomEvent('copyPost', {
+        detail: postData,
+        bubbles: true,
+        cancelable: true
+      });
+      const dispatched = window.dispatchEvent(event);
+      console.log('[PostsHistory] Event dispatched:', dispatched);
+    };
+    
+    // Отправляем сразу и с задержкой для надежности
+    sendEvent();
+    setTimeout(sendEvent, 200);
+    setTimeout(sendEvent, 500);
+    
+    toast.success('Пост скопирован в форму отправки. Файлы нужно добавить заново.');
+    
+    // Переключаемся на вкладку отправки поста
+    setTimeout(() => {
+      const tabEvent = new CustomEvent('switchTab', { detail: 'post' });
+      window.dispatchEvent(tabEvent);
+    }, 200);
+  };
+
   return (
     <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-3 sm:mb-4">
@@ -102,7 +215,7 @@ function PostsHistory({ token, onCopyPost }) {
           <div className="relative">
             <button
               onClick={() => setShowClearMenu(!showClearMenu)}
-              disabled={deleteOldPosts.isPending || history.length === 0}
+              disabled={deleteOldPosts.isPending || !Array.isArray(history) || history.length === 0}
               className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {deleteOldPosts.isPending ? 'Очистка...' : 'Очистить'}
@@ -255,7 +368,7 @@ function PostsHistory({ token, onCopyPost }) {
             Сбросить фильтры
           </button>
         )}
-        {filteredHistory.length !== history.length && (
+        {Array.isArray(history) && filteredHistory.length !== history.length && (
           <p className="text-sm text-gray-600 dark:text-gray-400">
             Найдено: {filteredHistory.length} из {history.length}
           </p>
@@ -266,49 +379,235 @@ function PostsHistory({ token, onCopyPost }) {
         <p className="text-gray-500 dark:text-gray-400">Загрузка...</p>
       ) : filteredHistory.length === 0 ? (
         <p className="text-gray-500 dark:text-gray-400">
-          {history.length === 0 ? 'История пуста' : 'Ничего не найдено'}
+          {!Array.isArray(history) || history.length === 0 ? 'История пуста' : 'Ничего не найдено'}
         </p>
       ) : (
         <div className="space-y-2 sm:space-y-3">
-          {filteredHistory.map((post, index) => (
-            <div
-              key={index}
-              className="p-2 sm:p-3 border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800/60"
-            >
-              <div className="flex items-start justify-between mb-1.5 sm:mb-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-                    {formatDate(post.timestamp)}
-                  </p>
-                  {post.author && (
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 sm:mt-1">
-                      Автор: {post.author.name} (@{post.author.username})
-                    </p>
-                  )}
+          {filteredHistory.map((post, index) => {
+            const postId = post.id || `post-${index}`;
+            const isExpanded = expandedPosts.has(postId);
+            const showErrors = showErrorDetails.has(postId);
+            const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+            const successCount = post.results && Array.isArray(post.results) 
+              ? post.results.filter(r => r && r.success).length 
+              : 0;
+            const errorCount = post.results && Array.isArray(post.results)
+              ? post.results.filter(r => r && !r.success).length
+              : 0;
+            const hasErrors = errorCount > 0;
+            const hasButtons = post.buttons && Array.isArray(post.buttons) && post.buttons.length > 0;
+            const hasFiles = post.files && Array.isArray(post.files) && post.files.length > 0;
+            const fullText = post.text || '';
+            const showFullText = isExpanded || fullText.length <= 200;
+
+            return (
+              <div
+                key={postId}
+                className="p-3 sm:p-4 border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800/60 hover:shadow-md transition-shadow"
+              >
+                {/* Заголовок поста */}
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 font-medium">
+                        {formatDate(post.timestamp)}
+                      </p>
+                      {post.author && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                          • {post.author.name || post.author.username}
+                        </span>
+                      )}
+                      {post.parseMode && (
+                        <span className="text-xs px-2 py-0.5 bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300 rounded">
+                          {post.parseMode}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => handleResend(post)}
+                      className="px-3 py-1.5 text-xs sm:text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                      title="Повторить отправку"
+                    >
+                      ↻ Повторить
+                    </button>
+                    <button
+                      onClick={() => toggleExpand(postId)}
+                      className="px-2 py-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                      title={isExpanded ? 'Свернуть' : 'Развернуть'}
+                    >
+                      {isExpanded ? '▼' : '▶'}
+                    </button>
+                  </div>
                 </div>
-                <span className="text-xs text-gray-400 dark:text-gray-500 ml-2 flex-shrink-0">
-                  {post.channelIds.length} каналов
-                </span>
+
+                {/* Текст поста */}
+                {fullText && (
+                  <div className="mb-3">
+                    <p className="text-sm sm:text-base text-gray-900 dark:text-white whitespace-pre-wrap break-words">
+                      {showFullText ? fullText : `${fullText.substring(0, 200)}...`}
+                    </p>
+                    {!showFullText && (
+                      <button
+                        onClick={() => toggleExpand(postId)}
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1"
+                      >
+                        Показать полностью
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Информация о каналах */}
+                {channelIds.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Каналы ({channelIds.length}):
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {channelIds.slice(0, isExpanded ? channelIds.length : 5).map((channelId) => (
+                        <span
+                          key={channelId}
+                          className="text-xs px-2 py-1 bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded"
+                        >
+                          {getChannelName(channelId)}
+                        </span>
+                      ))}
+                      {!isExpanded && channelIds.length > 5 && (
+                        <span className="text-xs px-2 py-1 text-gray-500 dark:text-gray-400">
+                          +{channelIds.length - 5} ещё
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Кнопки */}
+                {hasButtons && (() => {
+                  // Обрабатываем кнопки: могут быть в формате [[{text, url}]] или [{text, url}]
+                  const buttonsList = Array.isArray(post.buttons[0]) 
+                    ? post.buttons.flat() 
+                    : post.buttons;
+                  const buttonsCount = buttonsList.length;
+                  
+                  return (
+                    <div className="mb-2">
+                      <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                        Кнопки ({buttonsCount}):
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {buttonsList.map((button, btnIndex) => (
+                          button && button.url && (
+                            <a
+                              key={btnIndex}
+                              href={button.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-900/50"
+                            >
+                              {button.text || 'Кнопка'} →
+                            </a>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Файлы */}
+                {hasFiles && (
+                  <div className="mb-2">
+                    <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Файлы ({post.files.length}):
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {post.files.map((file, fileIndex) => (
+                        <span
+                          key={fileIndex}
+                          className="text-xs px-2 py-1 bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded"
+                        >
+                          {typeof file === 'string' ? file : (file.originalname || file.name || 'Файл')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Результаты отправки */}
+                {post.results && Array.isArray(post.results) && post.results.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-200 dark:border-slate-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-green-600 dark:text-green-400 font-medium">
+                          ✓ Успешно: {successCount}
+                        </span>
+                        {hasErrors && (
+                          <span className="text-red-600 dark:text-red-400 font-medium">
+                            ✗ Ошибок: {errorCount}
+                          </span>
+                        )}
+                      </div>
+                      {hasErrors && (
+                        <button
+                          onClick={() => toggleErrorDetails(postId)}
+                          className="text-xs text-red-600 dark:text-red-400 hover:underline"
+                        >
+                          {showErrors ? 'Скрыть детали' : 'Показать детали ошибок'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Детали ошибок */}
+                    {showErrors && hasErrors && (
+                      <div className="mt-2 space-y-1">
+                        {post.results
+                          .filter(r => r && !r.success)
+                          .map((result, resultIndex) => (
+                            <div
+                              key={resultIndex}
+                              className="text-xs p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded"
+                            >
+                              <p className="font-medium text-red-800 dark:text-red-300">
+                                {getChannelName(result.channelId || result.channel || 'Неизвестный канал')}:
+                              </p>
+                              <p className="text-red-600 dark:text-red-400 mt-0.5">
+                                {result.error || result.message || 'Неизвестная ошибка'}
+                              </p>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+
+                    {/* Детали успешных отправок (только в развернутом виде) */}
+                    {isExpanded && successCount > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {post.results
+                          .filter(r => r && r.success)
+                          .slice(0, 10)
+                          .map((result, resultIndex) => (
+                            <div
+                              key={resultIndex}
+                              className="text-xs p-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded"
+                            >
+                              <span className="text-green-700 dark:text-green-300">
+                                ✓ {getChannelName(result.channelId || result.channel || 'Неизвестный канал')}
+                                {result.messageId && ` (ID: ${result.messageId})`}
+                              </span>
+                            </div>
+                          ))}
+                        {successCount > 10 && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            ... и ещё {successCount - 10} успешных отправок
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <p className="text-sm sm:text-base text-gray-900 dark:text-white mb-1.5 sm:mb-2 whitespace-pre-wrap">
-                {post.text.substring(0, 200)}
-                {post.text.length > 200 && '...'}
-              </p>
-              {post.files && post.files.length > 0 && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1.5 sm:mb-2">
-                  Файлов: {post.files.length}
-                </p>
-              )}
-              <div className="text-xs flex gap-3 sm:gap-4">
-                <p className="text-green-600 dark:text-green-400">
-                  Успешно: {post.results.filter(r => r.success).length}
-                </p>
-                <p className="text-red-600 dark:text-red-400">
-                  Ошибок: {post.results.filter(r => !r.success).length}
-                </p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

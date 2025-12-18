@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-function BotStatus({ token, hasTokens = false }) {
+function BotStatus({ token, hasTokens = false, tokensLoading = false }) {
   const [status, setStatus] = useState({ initialized: false, loading: true });
 
   useEffect(() => {
@@ -30,6 +30,11 @@ function BotStatus({ token, hasTokens = false }) {
       setStatus({ initialized: false, loading: false, error: error.message });
     }
   };
+
+  // Если токены еще загружаются, не показываем ничего
+  if (tokensLoading) {
+    return null;
+  }
 
   if (status.loading) {
     return (

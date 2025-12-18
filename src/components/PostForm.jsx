@@ -35,19 +35,75 @@ function PostForm({ channels, token }) {
 
   // Обработка копирования поста из истории
   useEffect(() => {
+    let isProcessingCopyPost = false;
+    
     const handleCopyPost = (event) => {
+      console.log('[PostForm] copyPost event received:', event.detail);
       const post = event.detail;
-      setText(post.text || '');
-      setParseMode(post.parseMode || 'HTML');
-      if (post.channelIds && post.channelIds.length > 0) {
-        setSelectedChannels(post.channelIds);
+      
+      if (!post) {
+        console.warn('[PostForm] No post data in event');
+        return;
       }
-      if (post.buttons && post.buttons.length > 0) {
-        setButtons(post.buttons);
-        setShowButtons(true);
+      
+      // Предотвращаем множественную обработку
+      if (isProcessingCopyPost) {
+        console.log('[PostForm] Already processing copyPost, ignoring');
+        return;
       }
-      // Файлы нельзя скопировать, так как они уже отправлены
-      toast.info('Пост скопирован. Файлы нужно добавить заново.');
+      isProcessingCopyPost = true;
+      
+      console.log('[PostForm] Setting text:', post.text);
+      console.log('[PostForm] Setting channelIds:', post.channelIds);
+      console.log('[PostForm] Setting parseMode:', post.parseMode);
+      console.log('[PostForm] Setting buttons:', post.buttons);
+      
+      // Очищаем черновик перед установкой новых данных
+      localStorage.removeItem('postDraft');
+      
+      // Устанавливаем данные синхронно, чтобы они применились до следующего рендера
+      if (post.text !== undefined) {
+        setText(post.text || '');
+        console.log('[PostForm] Text set to:', post.text || '');
+      }
+      
+      if (post.parseMode) {
+        setParseMode(post.parseMode);
+        console.log('[PostForm] ParseMode set to:', post.parseMode);
+      }
+      
+      if (post.channelIds && Array.isArray(post.channelIds) && post.channelIds.length > 0) {
+        console.log('[PostForm] Setting selectedChannels to:', post.channelIds);
+        setSelectedChannels([...post.channelIds]);
+      } else {
+        console.warn('[PostForm] No valid channelIds in post data');
+      }
+      
+      if (post.buttons && Array.isArray(post.buttons) && post.buttons.length > 0) {
+        let buttonsToSet = post.buttons;
+        if (post.buttons.length > 0 && typeof post.buttons[0] === 'object' && 'text' in post.buttons[0] && 'url' in post.buttons[0]) {
+          buttonsToSet = post.buttons;
+        } else {
+          buttonsToSet = [{ text: '', url: '' }];
+        }
+        setButtons([...buttonsToSet]);
+        setShowButtons(buttonsToSet.some(b => b.text && b.url));
+        console.log('[PostForm] Buttons set to:', buttonsToSet);
+      } else {
+        setButtons([{ text: '', url: '' }]);
+        setShowButtons(false);
+        console.log('[PostForm] Buttons reset');
+      }
+      
+      // Сбрасываем флаг через небольшую задержку
+      setTimeout(() => {
+        isProcessingCopyPost = false;
+      }, 1000);
+      
+      console.log('[PostForm] Post data applied successfully');
+      
+      // Показываем уведомление
+      toast.info('Пост скопирован в форму отправки');
     };
 
     const handleSelectGroup = (event) => {
@@ -60,9 +116,11 @@ function PostForm({ channels, token }) {
       toast.success(`Выбрано каналов: ${channelIds.length}`);
     };
 
+    console.log('[PostForm] Registering copyPost event listener');
     window.addEventListener('copyPost', handleCopyPost);
     window.addEventListener('selectChannelGroup', handleSelectGroup);
     return () => {
+      console.log('[PostForm] Unregistering copyPost event listener');
       window.removeEventListener('copyPost', handleCopyPost);
       window.removeEventListener('selectChannelGroup', handleSelectGroup);
     };
@@ -108,24 +166,40 @@ function PostForm({ channels, token }) {
     setShowTemplateSelector(false);
   };
 
-  // Загрузка черновика из localStorage
+  // Загрузка черновика из localStorage (только при первой загрузке, если форма пустая)
   useEffect(() => {
+    // Загружаем черновик только если форма пустая
+    // Это предотвращает перезапись данных, установленных через событие copyPost
     const draft = localStorage.getItem('postDraft');
-    if (draft) {
+    if (draft && !text && selectedChannels.length === 0) {
       try {
         const parsed = JSON.parse(draft);
-        setText(parsed.text || '');
-        setSelectedChannels(parsed.selectedChannels || []);
+        if (parsed.text) {
+          setText(parsed.text);
+        }
+        if (parsed.selectedChannels && parsed.selectedChannels.length > 0) {
+          setSelectedChannels(parsed.selectedChannels);
+        }
       } catch (e) {
         console.error('Error loading draft:', e);
       }
     }
-  }, []);
+  }, []); // Запускаем только один раз при монтировании
 
-  // Автосохранение черновика
+  // Автосохранение черновика (с задержкой, чтобы не мешать событиям copyPost)
   useEffect(() => {
-    const draft = { text, selectedChannels };
-    localStorage.setItem('postDraft', JSON.stringify(draft));
+    // Не сохраняем черновик, если данные пустые (возможно, это после события copyPost)
+    if (!text && selectedChannels.length === 0) {
+      return;
+    }
+    
+    const timeoutId = setTimeout(() => {
+      const draft = { text, selectedChannels };
+      localStorage.setItem('postDraft', JSON.stringify(draft));
+      console.log('[PostForm] Draft saved:', draft);
+    }, 2000); // Увеличена задержка до 2 секунд, чтобы не перезаписывать данные из события copyPost
+    
+    return () => clearTimeout(timeoutId);
   }, [text, selectedChannels]);
 
   // Обработчик выбора шаблона
@@ -292,11 +366,22 @@ function PostForm({ channels, token }) {
         body: formData,
       });
 
-      const data = await response.json();
-
+      // Проверяем, что ответ не пустой и является JSON
       if (!response.ok) {
-        throw new Error(data.error || 'Ошибка при отправке поста');
+        let errorMessage = 'Ошибка при отправке поста';
+        try {
+          const errorData = await parseJsonResponse(response);
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          // Если не удалось распарсить JSON, используем текст ответа
+          const text = await response.text();
+          errorMessage = text || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
+
+      // Парсим успешный ответ
+      const data = await parseJsonResponse(response);
 
       setResult(data);
       setText('');

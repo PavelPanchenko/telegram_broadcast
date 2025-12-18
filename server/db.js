@@ -68,7 +68,8 @@ export function initDatabase() {
       results TEXT NOT NULL, -- JSON объект
       timestamp TEXT NOT NULL,
       userId TEXT,
-      buttons TEXT -- JSON массив
+      buttons TEXT, -- JSON массив
+      parseMode TEXT DEFAULT 'HTML'
     )
   `);
 
@@ -137,6 +138,16 @@ export function initDatabase() {
       data TEXT -- JSON объект
     )
   `);
+
+  // Миграция: добавляем поле parseMode в posts_history, если его нет
+  try {
+    db.exec(`ALTER TABLE posts_history ADD COLUMN parseMode TEXT DEFAULT 'HTML'`);
+  } catch (e) {
+    // Поле уже существует, игнорируем ошибку
+    if (!e.message.includes('duplicate column name')) {
+      console.warn('[DB] Warning adding parseMode column:', e.message);
+    }
+  }
 
   // Создаем индексы для производительности
   db.exec(`
@@ -375,14 +386,15 @@ export function getPostsHistory(tokenHash, limit = null) {
     files: row.files ? JSON.parse(row.files) : [],
     channels: JSON.parse(row.channels),
     results: JSON.parse(row.results),
-    buttons: row.buttons ? JSON.parse(row.buttons) : []
+    buttons: row.buttons ? JSON.parse(row.buttons) : [],
+    parseMode: row.parseMode || 'HTML'
   }));
 }
 
 export function addPostsHistory(history, tokenHash) {
   const stmt = db.prepare(`
-    INSERT INTO posts_history (id, tokenHash, text, files, channels, results, timestamp, userId, buttons)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO posts_history (id, tokenHash, text, files, channels, results, timestamp, userId, buttons, parseMode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   
   const insertMany = db.transaction((items) => {
@@ -396,7 +408,8 @@ export function addPostsHistory(history, tokenHash) {
         JSON.stringify(item.results),
         item.timestamp,
         item.userId || null,
-        JSON.stringify(item.buttons || [])
+        JSON.stringify(item.buttons || []),
+        item.parseMode || 'HTML'
       );
     }
   });

@@ -5,4 +5,7 @@ dist/
 *.log
 uploads/
 server/channels.json
+server/database.db
+*.db
+server/data/
 

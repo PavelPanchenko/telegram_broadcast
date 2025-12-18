@@ -8,4 +8,6 @@ server/channels.json
 server/database.db
 *.db
 server/data/
+# Игнорируем БД в директории data
+server/data/database.db
 

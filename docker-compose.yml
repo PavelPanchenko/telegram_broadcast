@@ -19,8 +19,8 @@ services:
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
     volumes:
       # Монтируем директорию с данными для сохранения между перезапусками
+      # БД теперь хранится в server/data/database.db
       - ./server/data:/app/server/data
-      - ./server/database.db:/app/server/database.db
       - ./uploads:/app/uploads
     networks:
       - telegram-broadcast-network

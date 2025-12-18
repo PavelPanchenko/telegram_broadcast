@@ -33,8 +33,9 @@ COPY --from=builder /app/dist ./dist
 COPY server ./server
 COPY index.html ./
 
-# Создаем директории для данных и загрузок
-RUN mkdir -p server/data uploads
+# Создаем директории для данных и загрузок с правильными правами
+RUN mkdir -p server/data uploads && \
+    chmod -R 755 server/data uploads
 
 # Открываем порт
 EXPOSE 5001

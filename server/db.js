@@ -8,10 +8,68 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Путь к БД
-const dbPath = path.join(__dirname, 'database.db');
+// Используем директорию data для хранения БД, чтобы избежать проблем с монтированием в Docker
+const dataDir = path.join(__dirname, 'data');
+
+// Убеждаемся, что директория существует и доступна для записи
+try {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o755 });
+  }
+  
+  // Проверяем права на запись
+  fs.accessSync(dataDir, fs.constants.W_OK);
+} catch (error) {
+  console.error('[DB] Error accessing data directory:', dataDir);
+  console.error('[DB] Error:', error.message);
+  console.error('[DB] Current working directory:', process.cwd());
+  console.error('[DB] __dirname:', __dirname);
+  throw new Error(`Cannot access data directory: ${dataDir}. Error: ${error.message}`);
+}
+
+const dbPath = path.join(dataDir, 'database.db');
+console.log('[DB] Database path:', dbPath);
 
 // Создаем подключение к БД
-const db = new Database(dbPath);
+// Если файл не существует, он будет создан автоматически
+let db;
+try {
+  db = new Database(dbPath);
+  console.log('[DB] Database connection established');
+} catch (error) {
+  console.error('[DB] Failed to open database:', dbPath);
+  console.error('[DB] Error code:', error.code);
+  console.error('[DB] Error message:', error.message);
+  console.error('[DB] Directory exists:', fs.existsSync(dataDir));
+  console.error('[DB] Directory is writable:', (() => {
+    try {
+      fs.accessSync(dataDir, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  })());
+  
+  // Если файл не существует, пробуем создать его
+  if (error.code === 'SQLITE_CANTOPEN' && !fs.existsSync(dbPath)) {
+    try {
+      // Создаем пустой файл
+      fs.writeFileSync(dbPath, '');
+      // Устанавливаем права на файл
+      fs.chmodSync(dbPath, 0o644);
+      console.log('[DB] Created empty database file');
+      
+      // Пробуем снова открыть
+      db = new Database(dbPath);
+      console.log('[DB] Database connection established after file creation');
+    } catch (createError) {
+      console.error('[DB] Failed to create database file:', createError);
+      throw new Error(`Cannot create database file: ${dbPath}. Error: ${createError.message}`);
+    }
+  } else {
+    throw error;
+  }
+}
 
 // Включаем foreign keys
 db.pragma('foreign_keys = ON');

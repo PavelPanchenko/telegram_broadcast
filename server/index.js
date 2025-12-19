@@ -248,10 +248,30 @@ async function getBotInfo(token) {
   try {
     const bot = new TelegramBot(token, { polling: false });
     const me = await bot.getMe();
+    
+    // Пробуем получить фото профиля бота
+    let avatarUrl = null;
+    try {
+      const photos = await bot.getUserProfilePhotos(me.id, { limit: 1 });
+      if (photos.total_count > 0 && photos.photos && photos.photos.length > 0) {
+        // Берем самое большое фото (последнее в массиве размеров)
+        const photoSizes = photos.photos[0];
+        if (photoSizes && photoSizes.length > 0) {
+          const largestPhoto = photoSizes[photoSizes.length - 1];
+          const file = await bot.getFile(largestPhoto.file_id);
+          avatarUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        }
+      }
+    } catch (photoError) {
+      // Игнорируем ошибки получения фото (для ботов фото может быть недоступно)
+      console.log(`[Tokens] Could not get bot photo for ${me.id}:`, photoError.message);
+    }
+    
     return {
       username: me.username || null,
       first_name: me.first_name || null,
-      id: me.id
+      id: me.id,
+      avatarUrl: avatarUrl
     };
   } catch (error) {
     console.error('[Tokens] Error getting bot info:', error);
@@ -671,6 +691,10 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
           if (!t.name || t.name === 'Основной бот') {
             t.name = botInfo.first_name || botInfo.username || t.name;
           }
+          // Обновляем фото, если оно получено
+          if (botInfo.avatarUrl) {
+            updateToken(t.token, { avatarUrl: botInfo.avatarUrl });
+          }
         }
       } catch (error) {
         // Игнорируем ошибки при получении информации о боте (rate limiting и т.д.)
@@ -717,7 +741,8 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
       name: t.name,
       createdAt: t.createdAt,
       isDefault: t.isDefault,
-      username: t.username || null
+      username: t.username || null,
+      avatarUrl: t.avatarUrl || null
     };
     
     // Для админа добавляем информацию о владельце
@@ -757,13 +782,32 @@ app.post('/api/tokens/validate', requireAuth, async (req, res) => {
     // Используем first_name или username как название по умолчанию
     const defaultName = me.first_name || me.username || `Бот ${me.id}`;
     
+    // Пробуем получить фото профиля бота
+    let avatarUrl = null;
+    try {
+      const photos = await testBot.getUserProfilePhotos(me.id, { limit: 1 });
+      if (photos.total_count > 0 && photos.photos && photos.photos.length > 0) {
+        // Берем самое большое фото (последнее в массиве размеров)
+        const photoSizes = photos.photos[0];
+        if (photoSizes && photoSizes.length > 0) {
+          const largestPhoto = photoSizes[photoSizes.length - 1];
+          const file = await testBot.getFile(largestPhoto.file_id);
+          avatarUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        }
+      }
+    } catch (photoError) {
+      // Игнорируем ошибки получения фото (для ботов фото может быть недоступно)
+      console.log(`[Tokens] Could not get bot photo for ${me.id}:`, photoError.message);
+    }
+    
     res.json({ 
       success: true,
       botInfo: {
         id: me.id,
         username: me.username,
         first_name: me.first_name,
-        defaultName: defaultName
+        defaultName: defaultName,
+        avatarUrl: avatarUrl
       }
     });
   } catch (error) {
@@ -803,6 +847,24 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
     // Если название не указано, используем first_name или username
     const botName = name || me.first_name || me.username || `Бот ${me.id}`;
     
+    // Пробуем получить фото профиля бота
+    let avatarUrl = null;
+    try {
+      const photos = await testBot.getUserProfilePhotos(me.id, { limit: 1 });
+      if (photos.total_count > 0 && photos.photos && photos.photos.length > 0) {
+        // Берем самое большое фото (последнее в массиве размеров)
+        const photoSizes = photos.photos[0];
+        if (photoSizes && photoSizes.length > 0) {
+          const largestPhoto = photoSizes[photoSizes.length - 1];
+          const file = await testBot.getFile(largestPhoto.file_id);
+          avatarUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        }
+      }
+    } catch (photoError) {
+      // Игнорируем ошибки получения фото (для ботов фото может быть недоступно)
+      console.log(`[Tokens] Could not get bot photo for ${me.id}:`, photoError.message);
+    }
+    
     const isDefault = userTokens.length === 0; // Первый токен пользователя становится дефолтным
     
     const tokenData = {
@@ -811,7 +873,8 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
       username: me.username,
       userId: userId, // Привязываем токен к пользователю
       createdAt: new Date().toISOString(),
-      isDefault: isDefault
+      isDefault: isDefault,
+      avatarUrl: avatarUrl
     };
     
     createToken(tokenData);
@@ -824,8 +887,9 @@ app.post('/api/tokens', requireAuth, async (req, res) => {
         id: getTokenHashSync(token),
         name: botName,
         username: me.username,
-        createdAt: tokens[tokens.length - 1].createdAt,
-        isDefault: isDefault
+        createdAt: tokens[tokens.length - 1]?.createdAt || new Date().toISOString(),
+        isDefault: isDefault,
+        avatarUrl: avatarUrl
       }
     });
   } catch (error) {

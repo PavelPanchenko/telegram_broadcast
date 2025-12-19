@@ -250,6 +250,35 @@ function BotSelector({ onBotChange, userRole }) {
                 setSelectedToken(token.id);
               }}
             >
+              {/* Аватар бота */}
+              <div className="flex-shrink-0 relative">
+                {token.avatarUrl ? (
+                  <>
+                    <img
+                      src={token.avatarUrl}
+                      alt={token.name}
+                      className="w-10 h-10 sm:w-12 sm:h-12 rounded-full object-cover border-2 border-gray-200 dark:border-slate-600"
+                      onError={(e) => {
+                        // Если фото не загрузилось, скрываем его и показываем дефолтный аватар
+                        e.target.style.display = 'none';
+                        const fallback = e.target.nextElementSibling;
+                        if (fallback) {
+                          fallback.style.display = 'flex';
+                        }
+                      }}
+                    />
+                    <div
+                      className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm sm:text-base hidden"
+                    >
+                      {token.name ? token.name.charAt(0).toUpperCase() : 'B'}
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm sm:text-base">
+                    {token.name ? token.name.charAt(0).toUpperCase() : 'B'}
+                  </div>
+                )}
+              </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{token.name}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 truncate">

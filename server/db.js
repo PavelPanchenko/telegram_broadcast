@@ -99,6 +99,7 @@ export function initDatabase() {
       userId TEXT,
       createdAt TEXT NOT NULL,
       isDefault INTEGER DEFAULT 0,
+      avatarUrl TEXT,
       FOREIGN KEY (userId) REFERENCES users(id)
     )
   `);
@@ -204,6 +205,16 @@ export function initDatabase() {
     // Поле уже существует, игнорируем ошибку
     if (!e.message.includes('duplicate column name')) {
       console.warn('[DB] Warning adding parseMode column:', e.message);
+    }
+  }
+
+  // Миграция: добавляем поле avatarUrl в tokens, если его нет
+  try {
+    db.exec(`ALTER TABLE tokens ADD COLUMN avatarUrl TEXT`);
+  } catch (e) {
+    // Поле уже существует, игнорируем ошибку
+    if (!e.message.includes('duplicate column name')) {
+      console.warn('[DB] Warning adding avatarUrl column:', e.message);
     }
   }
 
@@ -322,8 +333,8 @@ export function getTokenByToken(token) {
 
 export function createToken(tokenData) {
   const stmt = db.prepare(`
-    INSERT INTO tokens (token, name, username, userId, createdAt, isDefault)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO tokens (token, name, username, userId, createdAt, isDefault, avatarUrl)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     tokenData.token,
@@ -331,7 +342,8 @@ export function createToken(tokenData) {
     tokenData.username || null,
     tokenData.userId || null,
     tokenData.createdAt,
-    tokenData.isDefault ? 1 : 0
+    tokenData.isDefault ? 1 : 0,
+    tokenData.avatarUrl || null
   );
   return tokenData;
 }
@@ -351,6 +363,10 @@ export function updateToken(token, updates) {
   if (updates.isDefault !== undefined) {
     fields.push('isDefault = ?');
     values.push(updates.isDefault ? 1 : 0);
+  }
+  if (updates.avatarUrl !== undefined) {
+    fields.push('avatarUrl = ?');
+    values.push(updates.avatarUrl);
   }
   
   if (fields.length === 0) return;

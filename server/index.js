@@ -1135,7 +1135,16 @@ app.post('/api/channels/import', requireAuth, async (req, res) => {
 
 // Получить информацию о канале
 app.get('/api/channels/get-info/:channelId', requireAuth, async (req, res) => {
-  const { channelId } = req.params;
+  let { channelId } = req.params;
+  
+  // Декодируем URL-encoded символы
+  channelId = decodeURIComponent(channelId);
+  
+  // Убираем @ если есть
+  if (channelId.startsWith('@')) {
+    channelId = channelId.substring(1);
+  }
+  
   const tokenHash = getTokenHashFromRequest(req);
   const bot = getBotFromRequest(req);
   
@@ -1144,11 +1153,60 @@ app.get('/api/channels/get-info/:channelId', requireAuth, async (req, res) => {
   }
 
   try {
-    const chat = await bot.getChat(channelId);
-    const me = await bot.getMe();
-    const chatMember = await bot.getChatMember(channelId, me.id);
+    // Пробуем получить информацию о чате
+    // Если channelId начинается с буквы, добавляем @ для username
+    const chatId = channelId.startsWith('-') ? channelId : `@${channelId}`;
     
-    if (chatMember.status !== 'administrator' && chatMember.status !== 'creator') {
+    const chat = await bot.getChat(chatId);
+    const me = await bot.getMe();
+    
+    // Пробуем проверить права бота
+    let isAdmin = false;
+    try {
+      const chatMember = await bot.getChatMember(chatId, me.id);
+      isAdmin = chatMember.status === 'administrator' || chatMember.status === 'creator';
+    } catch (memberError) {
+      // Если список участников недоступен, пробуем проверить права через тестовую отправку
+      if (memberError.response?.body?.description?.includes('member list is inaccessible')) {
+        console.log(`[API] Member list inaccessible for ${chatId}, trying test message to verify permissions`);
+        try {
+          // Пробуем отправить тестовое сообщение (которое сразу удалим)
+          // Это реальная проверка прав бота
+          const testMessage = await bot.sendMessage(chatId, '🔍', { 
+            disable_notification: true,
+            disable_web_page_preview: true
+          });
+          
+          // Если сообщение отправлено успешно, удаляем его
+          try {
+            await bot.deleteMessage(chatId, testMessage.message_id);
+            console.log(`[API] Test message sent and deleted successfully for ${chatId}`);
+            isAdmin = true; // Бот может отправлять сообщения, значит имеет права
+          } catch (deleteError) {
+            // Если не удалось удалить, но сообщение отправлено - все равно считаем успехом
+            console.log(`[API] Test message sent but could not be deleted for ${chatId}:`, deleteError.message);
+            isAdmin = true;
+          }
+        } catch (sendError) {
+          // Если не удалось отправить сообщение, бот не имеет прав
+          console.error(`[API] Cannot send test message to ${chatId}:`, sendError.message);
+          const errorDesc = sendError.response?.body?.description || sendError.message;
+          if (errorDesc.includes('not a member') || errorDesc.includes('chat not found')) {
+            return res.status(403).json({ 
+              error: 'Bot is not a member of the channel. Please add the bot as an administrator first.' 
+            });
+          }
+          return res.status(403).json({ 
+            error: `Cannot verify bot permissions: ${errorDesc}` 
+          });
+        }
+      } else {
+        // Другие ошибки пробрасываем дальше
+        throw memberError;
+      }
+    }
+    
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Bot must be an administrator of the channel' });
     }
 
@@ -1156,22 +1214,43 @@ app.get('/api/channels/get-info/:channelId', requireAuth, async (req, res) => {
       success: true, 
       name: chat.title || chat.username || `Channel ${channelId}`,
       username: chat.username || null,
-      type: chat.type
+      type: chat.type,
+      id: chat.id ? String(chat.id) : chatId
     });
   } catch (error) {
-    console.error('Error getting channel info:', error);
-    res.status(500).json({ error: error.message || 'Failed to get channel info' });
+    console.error('[API] Error getting channel info:', error);
+    console.error('[API] Channel ID:', channelId);
+    console.error('[API] Error details:', {
+      code: error.code,
+      response: error.response?.body,
+      message: error.message
+    });
+    
+    // Более детальные сообщения об ошибках
+    let errorMessage = 'Failed to get channel info';
+    if (error.response?.body?.description) {
+      errorMessage = error.response.body.description;
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
 // Добавить канал
 app.post('/api/channels', requireAuth, async (req, res) => {
-  const { channelId, channelName, tags } = req.body;
+  let { channelId, channelName, tags } = req.body;
   const tokenHash = getTokenHashFromRequest(req);
   const bot = getBotFromRequest(req);
   
   if (!channelId) {
     return res.status(400).json({ error: 'Channel ID is required' });
+  }
+
+  // Нормализуем channelId: убираем @ если есть
+  if (channelId.startsWith('@')) {
+    channelId = channelId.substring(1);
   }
 
   if (!bot) {
@@ -1180,24 +1259,75 @@ app.post('/api/channels', requireAuth, async (req, res) => {
 
   try {
     const me = await bot.getMe();
-    const chat = await bot.getChat(channelId);
-    const chatMember = await bot.getChatMember(channelId, me.id);
+    // Если channelId начинается с цифры или минуса, используем как есть, иначе добавляем @
+    const chatId = channelId.startsWith('-') ? channelId : `@${channelId}`;
     
-    if (chatMember.status !== 'administrator' && chatMember.status !== 'creator') {
+    const chat = await bot.getChat(chatId);
+    
+    // Пробуем проверить права бота
+    let isAdmin = false;
+    try {
+      const chatMember = await bot.getChatMember(chatId, me.id);
+      isAdmin = chatMember.status === 'administrator' || chatMember.status === 'creator';
+    } catch (memberError) {
+      // Если список участников недоступен, пробуем проверить права через тестовую отправку
+      if (memberError.response?.body?.description?.includes('member list is inaccessible')) {
+        console.log(`[API] Member list inaccessible for ${chatId}, trying test message to verify permissions`);
+        try {
+          // Пробуем отправить тестовое сообщение (которое сразу удалим)
+          // Это реальная проверка прав бота
+          const testMessage = await bot.sendMessage(chatId, '🔍', { 
+            disable_notification: true,
+            disable_web_page_preview: true
+          });
+          
+          // Если сообщение отправлено успешно, удаляем его
+          try {
+            await bot.deleteMessage(chatId, testMessage.message_id);
+            console.log(`[API] Test message sent and deleted successfully for ${chatId}`);
+            isAdmin = true; // Бот может отправлять сообщения, значит имеет права
+          } catch (deleteError) {
+            // Если не удалось удалить, но сообщение отправлено - все равно считаем успехом
+            console.log(`[API] Test message sent but could not be deleted for ${chatId}:`, deleteError.message);
+            isAdmin = true;
+          }
+        } catch (sendError) {
+          // Если не удалось отправить сообщение, бот не имеет прав
+          console.error(`[API] Cannot send test message to ${chatId}:`, sendError.message);
+          const errorDesc = sendError.response?.body?.description || sendError.message;
+          if (errorDesc.includes('not a member') || errorDesc.includes('chat not found')) {
+            return res.status(403).json({ 
+              error: 'Bot is not a member of the channel. Please add the bot as an administrator first.' 
+            });
+          }
+          return res.status(403).json({ 
+            error: `Cannot verify bot permissions: ${errorDesc}` 
+          });
+        }
+      } else {
+        // Другие ошибки пробрасываем дальше
+        throw memberError;
+      }
+    }
+    
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Bot must be an administrator of the channel' });
     }
 
     // Если название не указано, берем из чата
     const finalChannelName = channelName || chat.title || chat.username || `Channel ${channelId}`;
+    
+    // Используем ID чата из ответа API или нормализованный channelId
+    const finalChannelId = chat.id ? String(chat.id) : (chat.username ? `@${chat.username}` : channelId);
 
     const channels = getChannels(tokenHash);
     
-    if (channels.find(c => c.id === channelId)) {
+    if (channels.find(c => c.id === finalChannelId || c.id === channelId)) {
       return res.status(400).json({ error: 'Channel already exists' });
     }
 
     createChannel({
-      id: channelId,
+      id: finalChannelId,
       name: finalChannelName,
       tags: tags || [],
       tokenHash,

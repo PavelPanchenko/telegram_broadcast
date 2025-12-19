@@ -83,13 +83,26 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
           if (token) headers['X-Bot-Token'] = token;
           
           const response = await fetch(`/api/channels/get-info/${encodeURIComponent(trimmedId)}`, { headers });
-          const data = await response.json();
           
-          if (response.ok && data.success) {
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ 
+              error: `HTTP error! status: ${response.status}` 
+            }));
+            // Показываем ошибку только если это не 404 (канал не найден)
+            if (response.status !== 404) {
+              const errorMessage = errorData.error || `Ошибка ${response.status}`;
+              toast.error(errorMessage);
+            }
+            return;
+          }
+          
+          const data = await response.json();
+          if (data.success) {
             setChannelName(data.name);
           }
         } catch (err) {
-          // Игнорируем ошибки при получении названия
+          // Игнорируем ошибки при получении названия (сетевые ошибки и т.д.)
+          console.error('Error fetching channel name:', err);
         } finally {
           setFetchingName(false);
         }
@@ -127,9 +140,12 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       setChannelId('');
       setChannelName('');
       setTags('');
+      toast.success('Канал успешно добавлен');
       onChannelAdded();
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err.message || 'Ошибка при добавлении канала';
+      setError(errorMessage);
+      toast.error(errorMessage);
     }
   };
 

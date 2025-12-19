@@ -68,6 +68,14 @@ export function useAddChannel() {
           tags: tags || [],
         }),
       });
+      
+      if (!response.ok) {
+        const errorData = await parseJsonResponse(response).catch(() => ({ 
+          error: `HTTP error! status: ${response.status}` 
+        }));
+        throw new Error(errorData.error || `Ошибка ${response.status}`);
+      }
+      
       return parseJsonResponse(response);
     },
     onSuccess: (data, variables) => {

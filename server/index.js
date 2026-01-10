@@ -166,7 +166,18 @@ function getBotFromRequest(req) {
   
   if (!bots.has(token)) {
     try {
-      bots.set(token, new TelegramBot(token, { polling: false }));
+      // Увеличиваем таймауты для больших файлов
+      bots.set(token, new TelegramBot(token, { 
+        polling: false,
+        request: {
+          agentOptions: {
+            keepAlive: true,
+            keepAliveMsecs: 30000
+          },
+          timeout: 60000, // 60 секунд для больших файлов
+          forever: true
+        }
+      }));
     } catch (error) {
       console.error('Error creating bot:', error);
       return null;
@@ -425,8 +436,21 @@ async function sendWithRetry(sendFn, maxRetries = 3) {
     try {
       return await sendFn();
     } catch (error) {
+      // Для socket hang up увеличиваем количество попыток и задержку
+      const isSocketError = error.message && (
+        error.message.includes('socket hang up') || 
+        error.message.includes('ECONNRESET') ||
+        error.code === 'EFATAL'
+      );
+      
       if (i === maxRetries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Экспоненциальная задержка
+      
+      // Для socket ошибок делаем более длинную задержку
+      const delay = isSocketError 
+        ? 2000 * (i + 1) // 2, 4, 6 секунд для socket ошибок
+        : 1000 * (i + 1); // 1, 2, 3 секунды для остальных
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
@@ -1438,7 +1462,8 @@ app.delete('/api/channels/:channelId', requireAuth, (req, res) => {
 
   deleteChannel(decodedChannelId);
   logAction('channel_deleted', { channelId: decodedChannelId }, tokenHash);
-  res.json({ success: true, channels: filtered });
+  const channels = getChannels(tokenHash);
+  res.json({ success: true, channels });
 });
 
 // Отправить пост (улучшенная версия с поддержкой множественных файлов)
@@ -1581,8 +1606,14 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
       normalizedParseMode = undefined;
     }
 
-    // Параллельная отправка
-    const sendPromises = channels.map(async (channelId) => {
+    // Параллельная отправка с задержками для избежания перегрузки и socket hang up
+    const sendPromises = channels.map(async (channelId, index) => {
+      // Добавляем задержку между отправками (100ms для текста, 500ms для файлов)
+      if (index > 0) {
+        const delay = files.length > 0 ? 500 : 100;
+        await new Promise(resolve => setTimeout(resolve, delay * index));
+      }
+      
       try {
         const sendOptions = {
           parse_mode: normalizedParseMode
@@ -1644,8 +1675,15 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         historyEntries.push({ channelId, success: true, timestamp: new Date().toISOString() });
       } catch (error) {
         console.error(`Error sending to ${channelId}:`, error);
-        results.push({ channelId, success: false, error: error.message });
-        historyEntries.push({ channelId, success: false, error: error.message, timestamp: new Date().toISOString() });
+        // Улучшаем сообщение об ошибке для socket hang up
+        let errorMessage = error.message;
+        if (error.message && error.message.includes('socket hang up')) {
+          errorMessage = 'Ошибка соединения: прервано во время передачи. Попробуйте отправить снова.';
+        } else if (error.response && error.response.body && error.response.body.description) {
+          errorMessage = error.response.body.description;
+        }
+        results.push({ channelId, success: false, error: errorMessage });
+        historyEntries.push({ channelId, success: false, error: errorMessage, timestamp: new Date().toISOString() });
       }
     });
 
@@ -2262,7 +2300,18 @@ cron.schedule('* * * * *', async () => {
     
     if (!bots.has(token)) {
       try {
-        bots.set(token, new TelegramBot(token, { polling: false }));
+        // Увеличиваем таймауты для больших файлов
+        bots.set(token, new TelegramBot(token, { 
+          polling: false,
+          request: {
+            agentOptions: {
+              keepAlive: true,
+              keepAliveMsecs: 30000
+            },
+            timeout: 60000, // 60 секунд для больших файлов
+            forever: true
+          }
+        }));
       } catch (error) {
         console.error(`[Scheduler] Error creating bot for token ${tokenHash}:`, error);
         continue;
@@ -2331,7 +2380,14 @@ cron.schedule('* * * * *', async () => {
         }
         
         // Отправляем пост с файлами если есть
-        for (const channelId of channelIds) {
+        for (let i = 0; i < channelIds.length; i++) {
+          const channelId = channelIds[i];
+          // Добавляем задержку между отправками в разные каналы
+          if (i > 0) {
+            const delay = post.files && post.files.length > 0 ? 500 : 100;
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+          
           try {
             if (post.files && post.files.length > 0) {
               const images = post.files.filter(f => ALLOWED_IMAGE_TYPES.includes(f.mimetype));
@@ -2431,11 +2487,18 @@ cron.schedule('* * * * *', async () => {
             historyEntries.push({ channelId, success: true, timestamp: new Date().toISOString() });
           } catch (channelError) {
             console.error(`[Scheduler] Error sending to channel ${channelId}:`, channelError);
-            historyEntries.push({ channelId, success: false, error: channelError.message, timestamp: new Date().toISOString() });
+            // Улучшаем сообщение об ошибке для socket hang up
+            let errorMessage = channelError.message;
+            if (channelError.message && channelError.message.includes('socket hang up')) {
+              errorMessage = 'Ошибка соединения: прервано во время передачи';
+            } else if (channelError.response && channelError.response.body && channelError.response.body.description) {
+              errorMessage = channelError.response.body.description;
+            }
+            historyEntries.push({ channelId, success: false, error: errorMessage, timestamp: new Date().toISOString() });
             logAction('scheduled_post_channel_error', { 
               postId: post.id, 
               channelId, 
-              error: channelError.message 
+              error: errorMessage 
             }, tokenHash);
           }
         }

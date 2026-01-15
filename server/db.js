@@ -762,6 +762,26 @@ export function createChannelGroup(group) {
   return group;
 }
 
+export function updateChannelGroup(id, updates) {
+  const fields = [];
+  const values = [];
+  
+  if (updates.name !== undefined) {
+    fields.push('name = ?');
+    values.push(updates.name);
+  }
+  if (updates.channels !== undefined) {
+    fields.push('channels = ?');
+    values.push(JSON.stringify(updates.channels));
+  }
+  
+  if (fields.length === 0) return;
+  
+  values.push(id);
+  const stmt = db.prepare(`UPDATE channel_groups SET ${fields.join(', ')} WHERE id = ?`);
+  stmt.run(...values);
+}
+
 export function deleteChannelGroup(id) {
   const stmt = db.prepare('DELETE FROM channel_groups WHERE id = ?');
   stmt.run(id);

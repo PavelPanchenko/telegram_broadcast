@@ -21,7 +21,7 @@ import {
   getTemplates, createTemplate, deleteTemplate,
   getScheduledPosts, getScheduledPostById, createScheduledPost, updateScheduledPost, deleteScheduledPost,
   getRecurringPosts, getRecurringPostById, createRecurringPost, updateRecurringPost, deleteRecurringPost,
-  getChannelGroups, createChannelGroup, deleteChannelGroup,
+  getChannelGroups, createChannelGroup, updateChannelGroup, deleteChannelGroup,
   getLogs, addLog
 } from './db.js';
 
@@ -453,6 +453,39 @@ async function sendWithRetry(sendFn, maxRetries = 3) {
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
+}
+
+function normalizeButtons(buttonsRaw) {
+  if (!buttonsRaw) return [];
+  
+  let parsed = buttonsRaw;
+  if (typeof buttonsRaw === 'string') {
+    try {
+      parsed = JSON.parse(buttonsRaw);
+    } catch {
+      return [];
+    }
+  }
+  
+  // Допустимые форматы:
+  // 1) [[{text,url}]]  (inline_keyboard)
+  // 2) [{text,url}]    (плоский список) -> превратим в [[{...}], ...]
+  if (!Array.isArray(parsed)) return [];
+  
+  const isRowArray = parsed.length > 0 && Array.isArray(parsed[0]);
+  const rows = isRowArray ? parsed : parsed.map(b => [b]);
+  
+  // Фильтруем некорректные кнопки
+  const cleaned = rows
+    .map(row => (Array.isArray(row) ? row : []).filter(btn => btn && typeof btn === 'object' && btn.text && btn.url))
+    .filter(row => row.length > 0);
+  
+  return cleaned;
+}
+
+function removeChannelIdFromArray(arr, channelId) {
+  if (!Array.isArray(arr) || !channelId) return [];
+  return arr.filter(id => id !== channelId);
 }
 
 // API Routes
@@ -1462,6 +1495,40 @@ app.delete('/api/channels/:channelId', requireAuth, (req, res) => {
 
   deleteChannel(decodedChannelId);
   logAction('channel_deleted', { channelId: decodedChannelId }, tokenHash);
+  
+  // Чистим ссылку на канал из групп/запланированных/повторяющихся постов,
+  // чтобы он не "подтягивался" обратно и не ломал отправку
+  try {
+    const groups = getChannelGroups(tokenHash);
+    for (const group of groups) {
+      const channelIds = Array.isArray(group.channels) ? group.channels : (group.channelIds || []);
+      const next = removeChannelIdFromArray(channelIds, decodedChannelId);
+      if (next.length !== channelIds.length) {
+        updateChannelGroup(group.id, { channels: next });
+      }
+    }
+    
+    const scheduled = getScheduledPosts(tokenHash);
+    for (const post of scheduled) {
+      const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+      const next = removeChannelIdFromArray(channelIds, decodedChannelId);
+      if (next.length !== channelIds.length) {
+        updateScheduledPost(post.id, { channels: next });
+      }
+    }
+    
+    const recurring = getRecurringPosts(tokenHash);
+    for (const post of recurring) {
+      const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
+      const next = removeChannelIdFromArray(channelIds, decodedChannelId);
+      if (next.length !== channelIds.length) {
+        updateRecurringPost(post.id, { channels: next });
+      }
+    }
+  } catch (e) {
+    console.error('[API] Error cleaning references after channel delete:', e);
+  }
+  
   const channels = getChannels(tokenHash);
   res.json({ success: true, channels });
 });
@@ -1526,7 +1593,7 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         channels: parsedChannelIds, // Используем channels вместо channelIds для БД
         files: filesData,
         parseMode,
-        buttons: buttons ? JSON.parse(buttons) : null,
+        buttons: normalizeButtons(buttons),
         scheduledTime: scheduledDate.toISOString(), // Используем scheduledTime для БД
         scheduledAt: scheduledDate.toISOString(), // Оставляем для ответа
         createdAt: new Date().toISOString(),
@@ -1622,7 +1689,7 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         // Добавляем кнопки если есть
         if (buttons) {
           try {
-            const buttonData = JSON.parse(buttons);
+            const buttonData = normalizeButtons(buttons);
             sendOptions.reply_markup = {
               inline_keyboard: buttonData
             };
@@ -1698,6 +1765,7 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
         results: historyEntries,
         timestamp: new Date().toISOString(),
         userId: user ? user.id : null,
+        buttons: normalizeButtons(buttons),
         parseMode: parseMode || 'HTML'
       }], tokenHash);
     }
@@ -1800,7 +1868,11 @@ app.delete('/api/posts/history', requireAuth, (req, res) => {
 // Группы каналов
 app.get('/api/channel-groups', requireAuth, (req, res) => {
   const tokenHash = getTokenHashFromRequest(req);
-  const groups = getChannelGroups(tokenHash);
+  const groups = getChannelGroups(tokenHash).map(g => ({
+    ...g,
+    // Backward compatible contract for frontend
+    channelIds: Array.isArray(g.channels) ? g.channels : (g.channelIds || [])
+  }));
   res.json(groups);
 });
 
@@ -1821,7 +1893,9 @@ app.post('/api/channel-groups', requireAuth, (req, res) => {
   };
   
   createChannelGroup({
-    ...newGroup,
+    id: newGroup.id,
+    name: newGroup.name,
+    channels: newGroup.channelIds,
     tokenHash
   });
   logAction('channel_group_created', { groupId: newGroup.id, name, channelCount: channelIds.length }, tokenHash);

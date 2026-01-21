@@ -86,7 +86,7 @@ function PostForm({ channels, token }) {
       }, 1000);
       
       // Показываем уведомление
-      toast.info('Пост скопирован в форму отправки');
+      toast.success('Пост скопирован в форму отправки. Файлы нужно добавить заново.');
     };
 
     const handleSelectGroup = (event) => {

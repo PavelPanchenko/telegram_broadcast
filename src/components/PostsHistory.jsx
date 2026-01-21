@@ -249,8 +249,7 @@ function PostsHistory({ token, onCopyPost }) {
     setTimeout(sendEvent, 200);
     setTimeout(sendEvent, 500);
     
-    toast.success('Пост скопирован в форму отправки. Файлы нужно добавить заново.');
-    
+    // Уведомление показывается в PostForm при обработке события copyPost
     // Переключаемся на вкладку отправки поста
     setTimeout(() => {
       const tabEvent = new CustomEvent('switchTab', { detail: 'post' });

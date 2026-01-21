@@ -25,21 +25,7 @@ function PostsHistory({ token, onCopyPost }) {
   const [postToDelete, setPostToDelete] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Автоматическое обновление истории каждые 5 секунд
-  useEffect(() => {
-    if (!token) return;
-
-    const interval = setInterval(() => {
-      setIsRefreshing(true);
-      refetchHistory().finally(() => {
-        setIsRefreshing(false);
-      });
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [token, refetchHistory]);
-
-  // Слушаем события отправки поста для немедленного обновления
+  // Обновление истории только при выполнении действий
   useEffect(() => {
     const handlePostSent = () => {
       // Небольшая задержка, чтобы сервер успел сохранить пост
@@ -112,9 +98,15 @@ function PostsHistory({ token, onCopyPost }) {
         ? `Удалено записей: ${data.removed}. Осталось: ${data.remaining}`
         : `История полностью очищена. Удалено записей: ${data.removed}`
       );
+      
+      // Обновляем историю после очистки
+      setIsRefreshing(true);
+      await refetchHistory();
+      setIsRefreshing(false);
     } catch (error) {
       console.error('[PostsHistory] Clear history error:', error);
       toast.error('Ошибка: ' + error.message);
+      setIsRefreshing(false);
     }
   };
 
@@ -178,12 +170,13 @@ function PostsHistory({ token, onCopyPost }) {
         toast.success(`Удалено сообщений: ${data.deleted} из ${data.total}`);
         // Небольшая задержка перед обновлением, чтобы БД успела обновиться
         await new Promise(resolve => setTimeout(resolve, 200));
-        // Обновляем историю - используем и invalidate и refetch для гарантии
+        // Обновляем историю после удаления сообщений
+        setIsRefreshing(true);
         queryClient.invalidateQueries({ 
           queryKey: ['postsHistory', token] 
         });
-        // Также явно обновляем данные
         await refetchHistory();
+        setIsRefreshing(false);
       } else {
         throw new Error(data.error || 'Ошибка при удалении сообщений');
       }

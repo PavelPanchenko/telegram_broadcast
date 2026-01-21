@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { toast } from '../utils/toast';
 import { usePostsHistory, useDeleteOldPosts } from '../hooks/usePostsHistory';
 import { useChannels } from '../hooks/useChannels';
+import { useQueryClient } from '@tanstack/react-query';
+import { parseJsonResponse } from '../utils/api';
 
 function PostsHistory({ token, onCopyPost }) {
   const [limit, setLimit] = useState(20);
@@ -13,11 +15,45 @@ function PostsHistory({ token, onCopyPost }) {
   const [dateTo, setDateTo] = useState('');
 
   // React Query хуки
-  const { data: history = [], isLoading: loading } = usePostsHistory(token, { limit });
+  const { data: history = [], isLoading: loading, refetch: refetchHistory } = usePostsHistory(token, { limit });
   const deleteOldPosts = useDeleteOldPosts();
   const { data: channels = [], isLoading: channelsLoading } = useChannels(token);
+  const queryClient = useQueryClient();
   const [expandedPosts, setExpandedPosts] = useState(new Set());
   const [showErrorDetails, setShowErrorDetails] = useState(new Set());
+  const [deletingPostId, setDeletingPostId] = useState(null);
+  const [postToDelete, setPostToDelete] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Автоматическое обновление истории каждые 5 секунд
+  useEffect(() => {
+    if (!token) return;
+
+    const interval = setInterval(() => {
+      setIsRefreshing(true);
+      refetchHistory().finally(() => {
+        setIsRefreshing(false);
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [token, refetchHistory]);
+
+  // Слушаем события отправки поста для немедленного обновления
+  useEffect(() => {
+    const handlePostSent = () => {
+      // Небольшая задержка, чтобы сервер успел сохранить пост
+      setTimeout(() => {
+        setIsRefreshing(true);
+        refetchHistory().finally(() => {
+          setIsRefreshing(false);
+        });
+      }, 1000);
+    };
+
+    window.addEventListener('postSent', handlePostSent);
+    return () => window.removeEventListener('postSent', handlePostSent);
+  }, [refetchHistory]);
 
   // Фильтрация истории (вычисляется на клиенте)
   const filteredHistory = useMemo(() => {
@@ -115,11 +151,51 @@ function PostsHistory({ token, onCopyPost }) {
     return channel ? (channel.name || channel.username || channelId) : channelId;
   };
 
-  const handleResend = (post) => {
-    console.log('[PostsHistory] handleResend called with post:', post);
-    console.log('[PostsHistory] Available channels:', channels);
-    console.log('[PostsHistory] Channels loading:', channelsLoading);
+  const handleDeleteMessages = (post) => {
+    setPostToDelete(post);
+  };
+
+  const handleDeleteMessagesConfirm = async () => {
+    if (!postToDelete) return;
+
+    setDeletingPostId(postToDelete.id);
+    const post = postToDelete;
+    setPostToDelete(null);
     
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['X-Bot-Token'] = token;
+
+      const response = await fetch(`/api/posts/history/${post.id}/delete-messages`, {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+      });
+
+      const data = await parseJsonResponse(response);
+
+      if (response.ok) {
+        toast.success(`Удалено сообщений: ${data.deleted} из ${data.total}`);
+        // Небольшая задержка перед обновлением, чтобы БД успела обновиться
+        await new Promise(resolve => setTimeout(resolve, 200));
+        // Обновляем историю - используем и invalidate и refetch для гарантии
+        queryClient.invalidateQueries({ 
+          queryKey: ['postsHistory', token] 
+        });
+        // Также явно обновляем данные
+        await refetchHistory();
+      } else {
+        throw new Error(data.error || 'Ошибка при удалении сообщений');
+      }
+    } catch (error) {
+      console.error('[PostsHistory] Delete messages error:', error);
+      toast.error('Ошибка: ' + error.message);
+    } finally {
+      setDeletingPostId(null);
+    }
+  };
+
+  const handleResend = (post) => {
     // Если каналы еще загружаются, ждем
     if (channelsLoading) {
       toast.info('Загрузка каналов...');
@@ -135,11 +211,9 @@ function PostsHistory({ token, onCopyPost }) {
     }
     
     const channelIds = Array.isArray(post.channels) ? post.channels : (post.channelIds || []);
-    console.log('[PostsHistory] Channel IDs from post:', channelIds);
     
     // Проверяем, что каналы все еще существуют
     const existingChannels = channelIds.filter(id => channels.some(c => c.id === id));
-    console.log('[PostsHistory] Existing channels after filter:', existingChannels);
     
     if (existingChannels.length === 0) {
       toast.error('Каналы из этого поста больше не доступны');
@@ -165,8 +239,6 @@ function PostsHistory({ token, onCopyPost }) {
       buttons: processedButtons
     };
 
-    console.log('[PostsHistory] Sending copyPost event with data:', postData);
-
     // Отправляем событие для копирования поста
     // Используем задержку, чтобы убедиться, что обработчик зарегистрирован
     // Также отправляем событие несколько раз с небольшой задержкой для надежности
@@ -176,8 +248,7 @@ function PostsHistory({ token, onCopyPost }) {
         bubbles: true,
         cancelable: true
       });
-      const dispatched = window.dispatchEvent(event);
-      console.log('[PostsHistory] Event dispatched:', dispatched);
+      window.dispatchEvent(event);
     };
     
     // Отправляем сразу и с задержкой для надежности
@@ -197,10 +268,35 @@ function PostsHistory({ token, onCopyPost }) {
   return (
     <div className="bg-white dark:bg-slate-800/90 dark:border dark:border-slate-700/50 rounded-lg shadow dark:shadow-xl p-3 sm:p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-3 sm:mb-4">
-        <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white">
-          История отправок
-        </h2>
         <div className="flex items-center gap-2">
+          <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white">
+            История отправок
+          </h2>
+          {isRefreshing && (
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+              <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              Обновление...
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setIsRefreshing(true);
+              refetchHistory().finally(() => setIsRefreshing(false));
+            }}
+            disabled={isRefreshing}
+            className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+            title="Обновить историю"
+          >
+            <svg className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Обновить
+          </button>
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
@@ -269,14 +365,14 @@ function PostsHistory({ token, onCopyPost }) {
         />
       )}
 
-      {/* Модальное окно подтверждения удаления */}
+      {/* Модальное окно подтверждения удаления истории */}
       {confirmDelete !== null && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          <div className="bg-white dark:bg-slate-800 dark:border dark:border-slate-700/50 rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
               Подтверждение удаления
             </h3>
-            <p className="text-gray-700 mb-6">
+            <p className="text-gray-700 dark:text-gray-300 mb-6">
               {confirmDelete === 'all' || confirmDelete === null
                 ? 'Вы уверены, что хотите удалить всю историю?'
                 : `Вы уверены, что хотите удалить записи старше ${confirmDelete} дней?`
@@ -286,7 +382,7 @@ function PostsHistory({ token, onCopyPost }) {
               <button
                 type="button"
                 onClick={() => setConfirmDelete(null)}
-                className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
               >
                 Отмена
               </button>
@@ -294,10 +390,49 @@ function PostsHistory({ token, onCopyPost }) {
                 type="button"
                 onClick={handleClearConfirm}
                 disabled={deleteOldPosts.isPending}
-                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
               >
                 {deleteOldPosts.isPending ? 'Удаление...' : 'Удалить'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Модальное окно подтверждения удаления сообщений */}
+      {postToDelete && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={() => setPostToDelete(null)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-800 dark:border dark:border-slate-700/50 rounded-lg shadow-xl max-w-md w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 sm:p-6">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Удалить сообщения?
+              </h3>
+              <p className="text-sm text-gray-700 dark:text-gray-300 mb-6">
+                Вы уверены, что хотите удалить все сообщения этого поста из Telegram каналов?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPostToDelete(null)}
+                  className="flex-1 px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteMessagesConfirm}
+                  disabled={deletingPostId === postToDelete.id}
+                  className="flex-1 px-4 py-2 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {deletingPostId === postToDelete.id ? 'Удаление...' : 'Удалить'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -400,10 +535,16 @@ function PostsHistory({ token, onCopyPost }) {
             const fullText = post.text || '';
             const showFullText = isExpanded || fullText.length <= 200;
 
+            const isDeleted = post.messagesDeletedAt !== null && post.messagesDeletedAt !== undefined && post.messagesDeletedAt !== '';
+
             return (
               <div
                 key={postId}
-                className="p-3 sm:p-4 border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800/60 hover:shadow-md transition-shadow"
+                className={`p-3 sm:p-4 border rounded-lg hover:shadow-md transition-shadow ${
+                  isDeleted
+                    ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 opacity-75'
+                    : 'border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800/60'
+                }`}
               >
                 {/* Заголовок поста */}
                 <div className="flex items-start justify-between mb-2">
@@ -417,6 +558,11 @@ function PostsHistory({ token, onCopyPost }) {
                           • {post.author.name || post.author.username}
                         </span>
                       )}
+                      {isDeleted && (
+                        <span className="text-xs px-2 py-0.5 bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200 rounded font-medium">
+                          🗑️ Удалено {formatDate(post.messagesDeletedAt)}
+                        </span>
+                      )}
                       {post.parseMode && (
                         <span className="text-xs px-2 py-0.5 bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300 rounded">
                           {post.parseMode}
@@ -425,6 +571,17 @@ function PostsHistory({ token, onCopyPost }) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* Проверяем, есть ли messageIds для удаления и не удалён ли уже пост */}
+                    {!isDeleted && post.results && post.results.some(r => r.success && r.messageIds && r.messageIds.length > 0) && (
+                      <button
+                        onClick={() => handleDeleteMessages(post)}
+                        disabled={deletingPostId === postId}
+                        className="px-3 py-1.5 text-xs sm:text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Удалить все сообщения этого поста из Telegram каналов"
+                      >
+                        {deletingPostId === postId ? 'Удаление...' : '🗑️ Удалить'}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleResend(post)}
                       className="px-3 py-1.5 text-xs sm:text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"

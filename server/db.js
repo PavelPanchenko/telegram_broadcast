@@ -218,6 +218,16 @@ export function initDatabase() {
     }
   }
 
+  // Миграция: добавляем поле messagesDeletedAt в posts_history, если его нет
+  try {
+    db.exec(`ALTER TABLE posts_history ADD COLUMN messagesDeletedAt TEXT`);
+  } catch (e) {
+    // Поле уже существует, игнорируем ошибку
+    if (!e.message.includes('duplicate column name')) {
+      console.warn('[DB] Warning adding messagesDeletedAt column:', e.message);
+    }
+  }
+
   // Создаем индексы для производительности
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tokens_userId ON tokens(userId);
@@ -449,20 +459,49 @@ export function deleteChannel(id) {
 // ========== POSTS HISTORY ==========
 
 export function getPostsHistory(tokenHash, limit = null) {
-  let query = 'SELECT * FROM posts_history WHERE tokenHash = ? ORDER BY timestamp DESC';
+  let query = `
+    SELECT 
+      ph.*,
+      u.id as author_id,
+      u.username as author_username,
+      u.name as author_name
+    FROM posts_history ph
+    LEFT JOIN users u ON ph.userId = u.id
+    WHERE ph.tokenHash = ? 
+    ORDER BY ph.timestamp DESC
+  `;
   if (limit) {
     query += ` LIMIT ${limit}`;
   }
   const stmt = db.prepare(query);
   const rows = stmt.all(tokenHash);
-  return rows.map(row => ({
-    ...row,
-    files: row.files ? JSON.parse(row.files) : [],
-    channels: JSON.parse(row.channels),
-    results: JSON.parse(row.results),
-    buttons: row.buttons ? JSON.parse(row.buttons) : [],
-    parseMode: row.parseMode || 'HTML'
-  }));
+  return rows.map(row => {
+    const result = {
+      ...row,
+      files: row.files ? JSON.parse(row.files) : [],
+      channels: JSON.parse(row.channels),
+      results: JSON.parse(row.results),
+      buttons: row.buttons ? JSON.parse(row.buttons) : [],
+      parseMode: row.parseMode || 'HTML',
+      messagesDeletedAt: row.messagesDeletedAt || null // Явно устанавливаем null если поле пустое
+    };
+    
+    // Добавляем информацию об авторе, если есть
+    if (row.author_id) {
+      result.author = {
+        id: row.author_id,
+        username: row.author_username,
+        name: row.author_name
+      };
+    }
+    
+    // Удаляем временные поля
+    delete result.author_id;
+    delete result.author_username;
+    delete result.author_name;
+    
+    return result;
+  });
 }
 
 export function addPostsHistory(history, tokenHash) {
@@ -526,6 +565,12 @@ export function deleteAllPostsHistory(tokenHash) {
 export function deleteOldPostsHistory(tokenHash, cutoffDate) {
   const stmt = db.prepare('DELETE FROM posts_history WHERE tokenHash = ? AND timestamp < ?');
   stmt.run(tokenHash, cutoffDate);
+}
+
+export function markPostMessagesAsDeleted(postId, deletedAt) {
+  const stmt = db.prepare('UPDATE posts_history SET messagesDeletedAt = ? WHERE id = ?');
+  const result = stmt.run(deletedAt, postId);
+  return result.changes > 0;
 }
 
 // ========== TEMPLATES ==========

@@ -17,7 +17,7 @@ import {
   getUsers, getUserById, getUserByUsername, createUser, updateUser, deleteUser,
   getTokens, getTokenByHash as dbGetTokenByHash, getTokenByToken, createToken, updateToken, deleteToken,
   getChannels, getChannelById, createChannel, updateChannel, deleteChannel,
-  getPostsHistory, addPostsHistory, deleteAllPostsHistory, deleteOldPostsHistory,
+  getPostsHistory, addPostsHistory, deleteAllPostsHistory, deleteOldPostsHistory, markPostMessagesAsDeleted,
   getTemplates, createTemplate, deleteTemplate,
   getScheduledPosts, getScheduledPostById, createScheduledPost, updateScheduledPost, deleteScheduledPost,
   getRecurringPosts, getRecurringPostById, createRecurringPost, updateRecurringPost, deleteRecurringPost,
@@ -67,8 +67,41 @@ app.use(session({
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 минут
   max: 100, // максимум 100 запросов
-  skip: (req) => req.method === 'OPTIONS' // Пропускаем preflight запросы
+  skip: (req) => {
+    // Пропускаем preflight запросы и логин (для него отдельный limiter)
+    if (req.method === 'OPTIONS') return true;
+    if (req.path === '/api/auth/login' || req.originalUrl === '/api/auth/login') return true;
+    return false;
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many requests, please try again later.'
 });
+
+// Более мягкий лимит для логина (чтобы избежать блокировки при ошибках ввода)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 100, // максимум 100 попыток входа за 15 минут (увеличено для избежания ложных срабатываний)
+  skip: (req) => req.method === 'OPTIONS',
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many login attempts, please try again later.',
+  keyGenerator: (req) => {
+    // Используем IP адрес для идентификации пользователя
+    return req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
+  },
+  handler: (req, res) => {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    console.warn(`[RateLimit] Too many login attempts from IP: ${ip}`);
+    res.status(429).json({ 
+      error: 'Too many login attempts, please try again later.',
+      retryAfter: Math.ceil(15 * 60) // секунды до сброса
+    });
+  }
+});
+
+// Применяем loginLimiter ПЕРЕД общим limiter, чтобы он имел приоритет
+app.use('/api/auth/login', loginLimiter);
 app.use('/api/', limiter);
 
 // Настройка multer для загрузки файлов
@@ -515,6 +548,7 @@ app.post('/api/auth/login', async (req, res) => {
       role: user.role
     };
 
+
     res.json({
       success: true,
       user: {
@@ -710,7 +744,7 @@ app.post('/api/users/change-password', requireAuth, (req, res) => {
     }
 
     const newPasswordHash = crypto.createHash('sha256').update(newPassword).digest('hex');
-    updateUser(userId, { password: newPasswordHash });
+    updateUser(user.id, { password: newPasswordHash });
     res.json({ success: true });
   } catch (error) {
     console.error('[Users] Change password error:', error);
@@ -1698,6 +1732,9 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
           }
         }
 
+        let messageResult = null;
+        let messageIds = [];
+        
         if (optimizedFiles.length > 0) {
           // Определяем тип медиа
           const images = optimizedFiles.filter(f => ALLOWED_IMAGE_TYPES.includes(f.mimetype));
@@ -1713,33 +1750,54 @@ app.post('/api/send-post', requireAuth, upload.array('files', MAX_IMAGES), async
               parse_mode: idx === 0 ? normalizedParseMode : undefined
             }));
             
-            await sendWithRetry(() => bot.sendMediaGroup(channelId, media));
+            messageResult = await sendWithRetry(() => bot.sendMediaGroup(channelId, media));
+            // sendMediaGroup возвращает массив сообщений
+            if (Array.isArray(messageResult)) {
+              messageIds = messageResult.map(msg => msg.message_id);
+            }
           } else if (images.length === 1) {
             // Одно изображение
-            await sendWithRetry(() => bot.sendPhoto(channelId, fs.createReadStream(images[0].path), {
+            messageResult = await sendWithRetry(() => bot.sendPhoto(channelId, fs.createReadStream(images[0].path), {
               caption: text,
               ...sendOptions
             }));
+            if (messageResult && messageResult.message_id) {
+              messageIds = [messageResult.message_id];
+            }
           } else if (videos.length > 0) {
             // Видео
-            await sendWithRetry(() => bot.sendVideo(channelId, fs.createReadStream(videos[0].path), {
+            messageResult = await sendWithRetry(() => bot.sendVideo(channelId, fs.createReadStream(videos[0].path), {
               caption: text,
               ...sendOptions
             }));
+            if (messageResult && messageResult.message_id) {
+              messageIds = [messageResult.message_id];
+            }
           } else if (documents.length > 0) {
             // Документы
-            await sendWithRetry(() => bot.sendDocument(channelId, fs.createReadStream(documents[0].path), {
+            messageResult = await sendWithRetry(() => bot.sendDocument(channelId, fs.createReadStream(documents[0].path), {
               caption: text,
               ...sendOptions
             }));
+            if (messageResult && messageResult.message_id) {
+              messageIds = [messageResult.message_id];
+            }
           }
         } else {
           // Только текст
-          await sendWithRetry(() => bot.sendMessage(channelId, text, sendOptions));
+          messageResult = await sendWithRetry(() => bot.sendMessage(channelId, text, sendOptions));
+          if (messageResult && messageResult.message_id) {
+            messageIds = [messageResult.message_id];
+          }
         }
 
-        results.push({ channelId, success: true });
-        historyEntries.push({ channelId, success: true, timestamp: new Date().toISOString() });
+        results.push({ channelId, success: true, messageIds });
+        historyEntries.push({ 
+          channelId, 
+          success: true, 
+          timestamp: new Date().toISOString(),
+          messageIds: messageIds.length > 0 ? messageIds : undefined
+        });
       } catch (error) {
         console.error(`Error sending to ${channelId}:`, error);
         // Улучшаем сообщение об ошибке для socket hang up
@@ -1818,6 +1876,94 @@ app.get('/api/posts/history', requireAuth, (req, res) => {
   const history = getPostsHistory(tokenHash);
   const limit = parseInt(req.query.limit) || 20;
   res.json(history.slice(0, limit));
+});
+
+// Удалить сообщения из Telegram каналов
+app.post('/api/posts/history/:postId/delete-messages', requireAuth, async (req, res) => {
+  const { postId } = req.params;
+  const tokenHash = getTokenHashFromRequest(req);
+  const bot = getBotFromRequest(req);
+  
+  if (!bot) {
+    return res.status(500).json({ error: 'Telegram bot not initialized' });
+  }
+  
+  try {
+    const history = getPostsHistory(tokenHash);
+    const post = history.find(p => p.id === postId);
+    
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found in history' });
+    }
+    
+    if (!post.results || !Array.isArray(post.results)) {
+      return res.status(400).json({ error: 'No results found for this post' });
+    }
+    
+    const deleteResults = [];
+    
+    // Удаляем сообщения из всех каналов, где они были успешно отправлены
+    for (const result of post.results) {
+      if (result.success && result.messageIds && Array.isArray(result.messageIds) && result.messageIds.length > 0) {
+        const channelId = result.channelId;
+        
+        // Удаляем все сообщения из медиагруппы или одно сообщение
+        for (const messageId of result.messageIds) {
+          try {
+            await bot.deleteMessage(channelId, messageId);
+            deleteResults.push({ 
+              channelId, 
+              messageId, 
+              success: true 
+            });
+          } catch (deleteError) {
+            console.error(`[API] Error deleting message ${messageId} from ${channelId}:`, deleteError);
+            deleteResults.push({ 
+              channelId, 
+              messageId, 
+              success: false, 
+              error: deleteError.message || 'Failed to delete message' 
+            });
+          }
+        }
+      } else {
+        // Если нет messageIds, значит сообщение не было отправлено или отправка не удалась
+        deleteResults.push({ 
+          channelId: result.channelId, 
+          success: false, 
+          error: 'No message IDs found (message was not sent or failed)' 
+        });
+      }
+    }
+    
+    const successCount = deleteResults.filter(r => r.success).length;
+    const totalCount = deleteResults.length;
+    
+    // Помечаем пост как удалённый, если хотя бы одно сообщение было удалено
+    if (successCount > 0) {
+      const deletedAt = new Date().toISOString();
+      const updated = markPostMessagesAsDeleted(postId, deletedAt);
+      if (!updated) {
+        console.warn(`[API] Failed to mark post ${postId} as deleted`);
+      }
+    }
+    
+    logAction('messages_deleted', { 
+      postId, 
+      successCount, 
+      totalCount 
+    }, tokenHash);
+    
+    res.json({ 
+      success: true, 
+      deleted: successCount,
+      total: totalCount,
+      results: deleteResults
+    });
+  } catch (error) {
+    console.error('[API] Error deleting messages:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete messages' });
+  }
 });
 
 // Очистить историю постов
@@ -2505,7 +2651,18 @@ cron.schedule('* * * * *', async () => {
                   parse_mode: idx === 0 ? parseMode : undefined // Используем нормализованный parseMode
                 }));
                 
-                await sendWithRetry(() => bot.sendMediaGroup(channelId, media));
+                const mediaResult = await sendWithRetry(() => bot.sendMediaGroup(channelId, media));
+                // sendMediaGroup возвращает массив сообщений
+                let messageIds = [];
+                if (Array.isArray(mediaResult)) {
+                  messageIds = mediaResult.map(msg => msg.message_id);
+                }
+                historyEntries.push({ 
+                  channelId, 
+                  success: true, 
+                  timestamp: new Date().toISOString(),
+                  messageIds: messageIds.length > 0 ? messageIds : undefined
+                });
               } else if (images.length === 1) {
                 let imagePath;
                 if (path.isAbsolute(images[0].path)) {
@@ -2522,10 +2679,16 @@ cron.schedule('* * * * *', async () => {
                     throw new Error(`File not found: ${imagePath}`);
                   }
                 }
-                await sendWithRetry(() => bot.sendPhoto(channelId, fs.createReadStream(imagePath), {
+                const photoResult = await sendWithRetry(() => bot.sendPhoto(channelId, fs.createReadStream(imagePath), {
                   caption: post.text,
                   ...sendOptions
                 }));
+                historyEntries.push({ 
+                  channelId, 
+                  success: true, 
+                  timestamp: new Date().toISOString(),
+                  messageIds: photoResult && photoResult.message_id ? [photoResult.message_id] : undefined
+                });
               } else if (videos.length > 0) {
                 const videoPath = path.isAbsolute(videos[0].path) 
                   ? videos[0].path 
@@ -2535,10 +2698,16 @@ cron.schedule('* * * * *', async () => {
                   throw new Error(`File not found: ${videoPath}`);
                 }
                 
-                await sendWithRetry(() => bot.sendVideo(channelId, fs.createReadStream(videoPath), {
+                const videoResult = await sendWithRetry(() => bot.sendVideo(channelId, fs.createReadStream(videoPath), {
                   caption: post.text,
                   ...sendOptions
                 }));
+                historyEntries.push({ 
+                  channelId, 
+                  success: true, 
+                  timestamp: new Date().toISOString(),
+                  messageIds: videoResult && videoResult.message_id ? [videoResult.message_id] : undefined
+                });
               } else if (documents.length > 0) {
                 const docPath = path.isAbsolute(documents[0].path) 
                   ? documents[0].path 
@@ -2548,17 +2717,34 @@ cron.schedule('* * * * *', async () => {
                   throw new Error(`File not found: ${docPath}`);
                 }
                 
-                await sendWithRetry(() => bot.sendDocument(channelId, fs.createReadStream(docPath), {
+                const docResult = await sendWithRetry(() => bot.sendDocument(channelId, fs.createReadStream(docPath), {
                   caption: post.text,
                   ...sendOptions
                 }));
+                historyEntries.push({ 
+                  channelId, 
+                  success: true, 
+                  timestamp: new Date().toISOString(),
+                  messageIds: docResult && docResult.message_id ? [docResult.message_id] : undefined
+                });
               } else {
-                await sendWithRetry(() => bot.sendMessage(channelId, post.text, sendOptions));
+                const textResult = await sendWithRetry(() => bot.sendMessage(channelId, post.text, sendOptions));
+                historyEntries.push({ 
+                  channelId, 
+                  success: true, 
+                  timestamp: new Date().toISOString(),
+                  messageIds: textResult && textResult.message_id ? [textResult.message_id] : undefined
+                });
               }
             } else {
-              await sendWithRetry(() => bot.sendMessage(channelId, post.text, sendOptions));
+              const textResult = await sendWithRetry(() => bot.sendMessage(channelId, post.text, sendOptions));
+              historyEntries.push({ 
+                channelId, 
+                success: true, 
+                timestamp: new Date().toISOString(),
+                messageIds: textResult && textResult.message_id ? [textResult.message_id] : undefined
+              });
             }
-            historyEntries.push({ channelId, success: true, timestamp: new Date().toISOString() });
           } catch (channelError) {
             console.error(`[Scheduler] Error sending to channel ${channelId}:`, channelError);
             // Улучшаем сообщение об ошибке для socket hang up

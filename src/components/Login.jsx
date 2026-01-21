@@ -33,7 +33,12 @@ function Login({ onLogin, darkMode = false }) {
         onLogin(data.user);
       }
     } catch (err) {
-      setError(err.message);
+      // Улучшенная обработка ошибки 429
+      if (err.message.includes('429') || err.message.includes('Слишком много запросов')) {
+        setError('Слишком много попыток входа. Пожалуйста, подождите 1-2 минуты и попробуйте снова.');
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }

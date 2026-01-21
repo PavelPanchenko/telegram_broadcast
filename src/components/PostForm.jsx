@@ -38,25 +38,17 @@ function PostForm({ channels, token }) {
     let isProcessingCopyPost = false;
     
     const handleCopyPost = (event) => {
-      console.log('[PostForm] copyPost event received:', event.detail);
       const post = event.detail;
       
       if (!post) {
-        console.warn('[PostForm] No post data in event');
         return;
       }
       
       // Предотвращаем множественную обработку
       if (isProcessingCopyPost) {
-        console.log('[PostForm] Already processing copyPost, ignoring');
         return;
       }
       isProcessingCopyPost = true;
-      
-      console.log('[PostForm] Setting text:', post.text);
-      console.log('[PostForm] Setting channelIds:', post.channelIds);
-      console.log('[PostForm] Setting parseMode:', post.parseMode);
-      console.log('[PostForm] Setting buttons:', post.buttons);
       
       // Очищаем черновик перед установкой новых данных
       localStorage.removeItem('postDraft');
@@ -64,19 +56,14 @@ function PostForm({ channels, token }) {
       // Устанавливаем данные синхронно, чтобы они применились до следующего рендера
       if (post.text !== undefined) {
         setText(post.text || '');
-        console.log('[PostForm] Text set to:', post.text || '');
       }
       
       if (post.parseMode) {
         setParseMode(post.parseMode);
-        console.log('[PostForm] ParseMode set to:', post.parseMode);
       }
       
       if (post.channelIds && Array.isArray(post.channelIds) && post.channelIds.length > 0) {
-        console.log('[PostForm] Setting selectedChannels to:', post.channelIds);
         setSelectedChannels([...post.channelIds]);
-      } else {
-        console.warn('[PostForm] No valid channelIds in post data');
       }
       
       if (post.buttons && Array.isArray(post.buttons) && post.buttons.length > 0) {
@@ -88,19 +75,15 @@ function PostForm({ channels, token }) {
         }
         setButtons([...buttonsToSet]);
         setShowButtons(buttonsToSet.some(b => b.text && b.url));
-        console.log('[PostForm] Buttons set to:', buttonsToSet);
       } else {
         setButtons([{ text: '', url: '' }]);
         setShowButtons(false);
-        console.log('[PostForm] Buttons reset');
       }
       
       // Сбрасываем флаг через небольшую задержку
       setTimeout(() => {
         isProcessingCopyPost = false;
       }, 1000);
-      
-      console.log('[PostForm] Post data applied successfully');
       
       // Показываем уведомление
       toast.info('Пост скопирован в форму отправки');
@@ -116,11 +99,9 @@ function PostForm({ channels, token }) {
       toast.success(`Выбрано каналов: ${channelIds.length}`);
     };
 
-    console.log('[PostForm] Registering copyPost event listener');
     window.addEventListener('copyPost', handleCopyPost);
     window.addEventListener('selectChannelGroup', handleSelectGroup);
     return () => {
-      console.log('[PostForm] Unregistering copyPost event listener');
       window.removeEventListener('copyPost', handleCopyPost);
       window.removeEventListener('selectChannelGroup', handleSelectGroup);
     };
@@ -394,6 +375,13 @@ function PostForm({ channels, token }) {
       // Сброс input файла
       const fileInput = document.querySelector('input[type="file"]');
       if (fileInput) fileInput.value = '';
+
+      // Отправляем событие для обновления истории постов
+      if (data.success) {
+        window.dispatchEvent(new CustomEvent('postSent', { 
+          detail: { scheduled: data.scheduled } 
+        }));
+      }
     } catch (error) {
       setResult({ success: false, error: error.message });
     } finally {

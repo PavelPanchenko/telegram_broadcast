@@ -717,7 +717,7 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
   }
 });
 
-// Изменение пароля
+// Изменение пароля (для текущего пользователя)
 app.post('/api/users/change-password', requireAuth, (req, res) => {
   const { currentPassword, newPassword } = req.body;
   
@@ -748,6 +748,42 @@ app.post('/api/users/change-password', requireAuth, (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('[Users] Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// Изменение пароля пользователя админом (без требования текущего пароля)
+app.post('/api/users/:id/change-password', requireAuth, (req, res) => {
+  const currentUser = req.session.user;
+  const { id } = req.params;
+  const { newPassword } = req.body;
+  
+  // Только админ может менять пароли других пользователей
+  if (currentUser.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admin can change other users passwords' });
+  }
+  
+  if (!newPassword) {
+    return res.status(400).json({ error: 'New password is required' });
+  }
+
+  if (newPassword.length < 4) {
+    return res.status(400).json({ error: 'New password must be at least 4 characters' });
+  }
+
+  try {
+    const users = getUsers();
+    const userToUpdate = users.find(u => u.id === id);
+    
+    if (!userToUpdate) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const newPasswordHash = crypto.createHash('sha256').update(newPassword).digest('hex');
+    updateUser(id, { password: newPasswordHash });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Users] Admin change password error:', error);
     res.status(500).json({ error: 'Failed to change password' });
   }
 });

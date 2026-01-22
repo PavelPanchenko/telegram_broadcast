@@ -21,9 +21,15 @@ function UserManagement({ currentUser }) {
     role: currentUser?.role === 'admin' ? 'user' : 'assistant'
   });
 
-  // Форма смены пароля
+  // Форма смены пароля (для текущего пользователя)
   const [passwordData, setPasswordData] = useState({
     currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+
+  // Форма смены пароля другого пользователя (для админа)
+  const [adminPasswordData, setAdminPasswordData] = useState({
     newPassword: '',
     confirmPassword: ''
   });
@@ -185,6 +191,58 @@ function UserManagement({ currentUser }) {
     }
   };
 
+  const handleAdminChangePassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (!adminPasswordData.newPassword || !adminPasswordData.confirmPassword) {
+      setError('Заполните все поля');
+      return;
+    }
+
+    if (adminPasswordData.newPassword.length < 4) {
+      setError('Новый пароль должен быть не менее 4 символов');
+      return;
+    }
+
+    if (adminPasswordData.newPassword !== adminPasswordData.confirmPassword) {
+      setError('Новые пароли не совпадают');
+      return;
+    }
+
+    if (!showChangePassword) {
+      setError('Пользователь не выбран');
+      return;
+    }
+
+    try {
+      const encodedId = encodeURIComponent(showChangePassword);
+      const response = await fetch(`/api/users/${encodedId}/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          newPassword: adminPasswordData.newPassword,
+        }),
+      });
+
+      const data = await parseJsonResponse(response);
+
+      if (response.ok) {
+        setSuccess('Пароль успешно изменен');
+        setAdminPasswordData({ newPassword: '', confirmPassword: '' });
+        setShowChangePassword(null);
+      } else {
+        setError(data.error || 'Ошибка при изменении пароля');
+      }
+    } catch (err) {
+      setError('Ошибка: ' + err.message);
+    }
+  };
+
   if (loading) {
     return <p className="text-gray-500 dark:text-gray-400">Загрузка...</p>;
   }
@@ -324,7 +382,7 @@ function UserManagement({ currentUser }) {
         </form>
       )}
 
-      {/* Форма смены пароля */}
+      {/* Форма смены пароля (для текущего пользователя) */}
       {showChangePassword === currentUser.id && (
         <form onSubmit={handleChangePassword} className="mb-4 sm:mb-6 p-3 sm:p-4 bg-gray-50 dark:bg-slate-800/60 rounded-lg border dark:border-slate-700/50">
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Изменить пароль</h3>
@@ -446,6 +504,99 @@ function UserManagement({ currentUser }) {
         </form>
       )}
 
+      {/* Форма смены пароля (для админа, меняющего пароль другого пользователя) */}
+      {showChangePassword && showChangePassword !== currentUser.id && currentUser?.role === 'admin' && (
+        <form onSubmit={handleAdminChangePassword} className="mb-4 sm:mb-6 p-3 sm:p-4 bg-gray-50 dark:bg-slate-800/60 rounded-lg border dark:border-slate-700/50">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+            Изменить пароль пользователя: {users.find(u => u.id === showChangePassword)?.name || 'Неизвестно'}
+          </h3>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Новый пароль
+              </label>
+              <div className="relative">
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={adminPasswordData.newPassword}
+                  onChange={(e) => setAdminPasswordData({ ...adminPasswordData, newPassword: e.target.value })}
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                  required
+                  minLength={4}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
+                  tabIndex={-1}
+                >
+                  {showNewPassword ? (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Подтвердите новый пароль
+              </label>
+              <div className="relative">
+                <input
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  value={adminPasswordData.confirmPassword}
+                  onChange={(e) => setAdminPasswordData({ ...adminPasswordData, confirmPassword: e.target.value })}
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                  required
+                  minLength={4}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
+                  tabIndex={-1}
+                >
+                  {showConfirmPassword ? (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button
+              type="submit"
+              className="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
+            >
+              Изменить пароль
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowChangePassword(null);
+                setAdminPasswordData({ newPassword: '', confirmPassword: '' });
+              }}
+              className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
+            >
+              Отмена
+            </button>
+          </div>
+        </form>
+      )}
+
       {/* Модальное окно подтверждения удаления */}
       {userToDelete && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -491,7 +642,7 @@ function UserManagement({ currentUser }) {
               </p>
             </div>
             <div className="flex gap-1.5 sm:gap-2 flex-shrink-0">
-              {user.id === currentUser.id && (
+              {(user.id === currentUser.id || currentUser?.role === 'admin') && (
                 <button
                   onClick={() => setShowChangePassword(user.id)}
                   className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"

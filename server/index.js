@@ -155,6 +155,125 @@ function getTokenByHash(hash) {
   return tokenData ? tokenData.token : null;
 }
 
+const TELEGRAM_BOT_REQUEST_OPTIONS = {
+  agentOptions: {
+    keepAlive: true,
+    keepAliveMsecs: 30000
+  },
+  timeout: 60000,
+  forever: true
+};
+
+/** Единая точка создания TelegramBot — переиспользуется в getBotFromRequest и /api/bots-status */
+function getBotForToken(token) {
+  if (!token) return null;
+  if (!bots.has(token)) {
+    try {
+      bots.set(token, new TelegramBot(token, {
+        polling: false,
+        request: TELEGRAM_BOT_REQUEST_OPTIONS
+      }));
+    } catch (error) {
+      console.error('Error creating bot:', error);
+      return null;
+    }
+  }
+  return bots.get(token);
+}
+
+/** Токен для URL api.telegram.org/file/bot… (как в цикле аватарок) */
+function resolveTokenForFileUrl(req) {
+  const tokenHashOrToken = req.headers['x-bot-token'] || req.body?.tokenHash || req.body?.token;
+  let token = null;
+  if (tokenHashOrToken) {
+    if (tokenHashOrToken.includes(':')) {
+      token = tokenHashOrToken;
+    } else {
+      token = getTokenByHash(tokenHashOrToken);
+    }
+  }
+  if (!token) {
+    const tokens = getTokens();
+    const defaultToken = tokens.find(t => t.isDefault);
+    token = defaultToken ? defaultToken.token : null;
+  }
+  return token;
+}
+
+const AVATAR_FETCH_CONCURRENCY = 4;
+
+async function fetchChannelAvatarRow(channel, bot, fileToken, user, ownerInfo) {
+  try {
+    const chat = await bot.getChat(channel.id);
+    let avatarUrl = null;
+
+    if (chat.photo) {
+      const fileId = chat.photo.big_file_id || chat.photo.small_file_id;
+      if (fileId && fileToken) {
+        try {
+          const file = await bot.getFile(fileId);
+          avatarUrl = `https://api.telegram.org/file/bot${fileToken}/${file.file_path}`;
+        } catch (error) {
+          console.error(`[API] Error getting avatar file for ${channel.id}:`, error.message);
+        }
+      }
+    }
+
+    const channelData = { ...channel, avatarUrl };
+    if (avatarUrl) {
+      try {
+        updateChannel(channel.id, { avatarUrl });
+      } catch (e) {
+        console.error(`[API] Failed to save avatarUrl for ${channel.id}:`, e.message);
+      }
+    }
+    if (user?.role === 'admin' && ownerInfo) {
+      channelData.owner = ownerInfo;
+    }
+    return channelData;
+  } catch (error) {
+    if (error.response?.statusCode !== 429) {
+      console.error(`[API] Error getting chat info for ${channel.id}:`, error.message);
+    }
+    const channelData = { ...channel };
+    if (user?.role === 'admin' && ownerInfo) {
+      channelData.owner = ownerInfo;
+    }
+    return channelData;
+  }
+}
+
+async function fetchChannelsAvatarsWithConcurrency(channels, bot, fileToken, user, ownerInfo) {
+  const out = new Array(channels.length);
+  const pendingIdx = [];
+  for (let i = 0; i < channels.length; i++) {
+    if (channels[i].avatarUrl) {
+      const channelData = { ...channels[i], avatarUrl: channels[i].avatarUrl };
+      if (user?.role === 'admin' && ownerInfo) {
+        channelData.owner = ownerInfo;
+      }
+      out[i] = channelData;
+    } else {
+      pendingIdx.push(i);
+    }
+  }
+  if (pendingIdx.length === 0) {
+    return out;
+  }
+  let next = 0;
+  const workerCount = Math.min(AVATAR_FETCH_CONCURRENCY, pendingIdx.length);
+  async function worker() {
+    while (true) {
+      const slot = next++;
+      if (slot >= pendingIdx.length) return;
+      const i = pendingIdx[slot];
+      out[i] = await fetchChannelAvatarRow(channels[i], bot, fileToken, user, ownerInfo);
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return out;
+}
+
 // Получить текущий бот из запроса
 function getBotFromRequest(req) {
   const userId = req.session?.user?.id;
@@ -201,29 +320,7 @@ function getBotFromRequest(req) {
     token = defaultToken ? defaultToken.token : null;
   }
   
-  if (!token) return null;
-  
-  if (!bots.has(token)) {
-    try {
-      // Увеличиваем таймауты для больших файлов
-      bots.set(token, new TelegramBot(token, { 
-        polling: false,
-        request: {
-          agentOptions: {
-            keepAlive: true,
-            keepAliveMsecs: 30000
-          },
-          timeout: 60000, // 60 секунд для больших файлов
-          forever: true
-        }
-      }));
-    } catch (error) {
-      console.error('Error creating bot:', error);
-      return null;
-    }
-  }
-  
-  return bots.get(token);
+  return getBotForToken(token);
 }
 
 /** Как в POST /api/channels: username → @name, числовой id чата — как строка. */
@@ -1304,94 +1401,16 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       }
     }
     
-    // Если запрошены аватарки, получаем их
+    // Если запрошены аватарки — параллельно до AVATAR_FETCH_CONCURRENCY запросов (как в пуле)
     if (req.query.includeAvatars === 'true' && bot) {
-    // Обрабатываем каналы последовательно с задержкой, чтобы избежать rate limiting
-    const channelsWithAvatars = [];
-    for (let i = 0; i < channels.length; i++) {
-      const channel = channels[i];
-      if (channel.avatarUrl) {
-        const channelData = { ...channel, avatarUrl: channel.avatarUrl };
-        if (user?.role === 'admin' && ownerInfo) {
-          channelData.owner = ownerInfo;
-        }
-        channelsWithAvatars.push(channelData);
-        continue;
-      }
-      // Добавляем задержку между запросами (50ms)
-      if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-      
-      try {
-        const chat = await bot.getChat(channel.id);
-        let avatarUrl = null;
-        
-        if (chat.photo) {
-          // Получаем file_id самого большого фото (big_file_id для лучшего качества)
-          const fileId = chat.photo.big_file_id || chat.photo.small_file_id;
-          if (fileId) {
-            try {
-              const file = await bot.getFile(fileId);
-              // Получаем токен для формирования URL
-              const tokenHashOrToken = req.headers['x-bot-token'] || req.body.tokenHash || req.body.token;
-              let token = null;
-              
-              if (tokenHashOrToken) {
-                if (tokenHashOrToken.includes(':')) {
-                  token = tokenHashOrToken;
-                } else {
-                  token = getTokenByHash(tokenHashOrToken);
-                }
-              }
-              
-              if (!token) {
-                const tokens = getTokens();
-                const defaultToken = tokens.find(t => t.isDefault);
-                token = defaultToken ? defaultToken.token : null;
-              }
-              
-              if (token) {
-                avatarUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-              }
-            } catch (error) {
-              console.error(`[API] Error getting avatar file for ${channel.id}:`, error.message);
-            }
-          }
-        }
-        
-        const channelData = {
-          ...channel,
-          avatarUrl
-        };
-        if (avatarUrl) {
-          try {
-            updateChannel(channel.id, { avatarUrl });
-          } catch (e) {
-            console.error(`[API] Failed to save avatarUrl for ${channel.id}:`, e.message);
-          }
-        }
-        
-        // Для админа добавляем информацию о владельце
-        if (user?.role === 'admin' && ownerInfo) {
-          channelData.owner = ownerInfo;
-        }
-        
-        channelsWithAvatars.push(channelData);
-      } catch (error) {
-        // Если не удалось получить информацию о чате, возвращаем канал без аватарки
-        // Игнорируем ошибки rate limiting (429)
-        if (error.response?.statusCode !== 429) {
-          console.error(`[API] Error getting chat info for ${channel.id}:`, error.message);
-        }
-        const channelData = { ...channel };
-        if (user?.role === 'admin' && ownerInfo) {
-          channelData.owner = ownerInfo;
-        }
-        channelsWithAvatars.push(channelData);
-      }
-    }
-    
+      const fileToken = resolveTokenForFileUrl(req);
+      const channelsWithAvatars = await fetchChannelsAvatarsWithConcurrency(
+        channels,
+        bot,
+        fileToken,
+        user,
+        ownerInfo
+      );
       setChannelsListCache(tokenHash, true, userId, channelsWithAvatars);
       return res.json(channelsWithAvatars);
     }
@@ -2557,7 +2576,11 @@ app.get('/api/bots-status', requireAuth, async (req, res) => {
       tokensToCheck.map(async (t) => {
         const id = getTokenHashSync(t.token);
         try {
-          const bot = new TelegramBot(t.token, { polling: false });
+          const bot = getBotForToken(t.token);
+          if (!bot) {
+            statuses[id] = { online: false };
+            return;
+          }
           const me = await bot.getMe();
           statuses[id] = { online: true, username: me.username || null };
         } catch (error) {

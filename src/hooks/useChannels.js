@@ -25,7 +25,8 @@ export function useChannels(token, options = {}) {
       return parseJsonResponse(response);
     },
     enabled: !!token, // Запрос выполняется только если есть token
-    staleTime: 2 * 60 * 1000, // 2 минуты для каналов
+    staleTime: 30 * 60 * 1000, // 30 мин — список каналов редко меняется; мутации делают invalidateQueries
+    gcTime: 60 * 60 * 1000,
   });
 }
 

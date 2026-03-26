@@ -18,7 +18,8 @@ export function useScheduledPosts(token) {
       return parseJsonResponse(response);
     },
     enabled: !!token,
-    refetchInterval: 30000, // Обновлять каждые 30 секунд
+    refetchInterval: (query) =>
+      typeof document !== 'undefined' && document.hidden ? false : 30000,
     staleTime: 10 * 1000, // 10 секунд
   });
 }

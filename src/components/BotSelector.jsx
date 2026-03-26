@@ -1,6 +1,35 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from '../utils/toast';
-import { useTokens, useValidateToken, useAddToken, useDeleteToken } from '../hooks/useTokens';
+import {
+  useTokens,
+  useValidateToken,
+  useAddToken,
+  useDeleteToken,
+  useReplaceBotTokenSecret,
+  useBotsOnlineStatus,
+} from '../hooks/useTokens';
+
+function BotOnlineBadge({ status, loading }) {
+  if (loading) {
+    return (
+      <span className="inline-flex shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400">
+        …
+      </span>
+    );
+  }
+  const online = status?.online === true;
+  return (
+    <span
+      className={`inline-flex shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+        online
+          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+          : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
+      }`}
+    >
+      {online ? 'В сети' : 'Не в сети'}
+    </span>
+  );
+}
 
 function BotSelector({ onBotChange, userRole }) {
   const [selectedToken, setSelectedToken] = useState(null);
@@ -9,15 +38,21 @@ function BotSelector({ onBotChange, userRole }) {
   const [nameInput, setNameInput] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [tokenToDelete, setTokenToDelete] = useState(null);
+  const [replaceTarget, setReplaceTarget] = useState(null);
+  const [replaceTokenInput, setReplaceTokenInput] = useState('');
   const fetchNameTimeoutRef = useRef(null);
   const tokensInitializedRef = useRef(false);
   const prevSelectedTokenRef = useRef(null);
 
   // React Query хуки
   const { data: tokens = [], isLoading: loading } = useTokens();
+  const { data: botStatuses = {}, isLoading: statusLoading } = useBotsOnlineStatus(
+    Array.isArray(tokens) && tokens.length > 0
+  );
   const validateToken = useValidateToken();
   const addToken = useAddToken();
   const deleteToken = useDeleteToken();
+  const replaceSecret = useReplaceBotTokenSecret();
 
   // Токены уже доступны через React Query в родительском компоненте
 
@@ -131,6 +166,27 @@ function BotSelector({ onBotChange, userRole }) {
     setShowDeleteConfirm(true);
   };
 
+  const handleReplaceTokenSubmit = async (e) => {
+    e.preventDefault();
+    if (!replaceTarget || !replaceTokenInput.trim()) return;
+
+    try {
+      const data = await replaceSecret.mutateAsync({
+        id: replaceTarget.id,
+        newToken: replaceTokenInput.trim(),
+      });
+      if (data.token && selectedToken === replaceTarget.id) {
+        setSelectedToken(data.token.id);
+        localStorage.setItem('selectedBotToken', data.token.id);
+      }
+      setReplaceTarget(null);
+      setReplaceTokenInput('');
+      toast.success('Токен бота обновлён. Каналы и история сохранены.');
+    } catch (error) {
+      toast.error(error.message || 'Ошибка смены токена');
+    }
+  };
+
   const handleDeleteConfirm = async () => {
     if (!tokenToDelete) return;
     
@@ -234,24 +290,24 @@ function BotSelector({ onBotChange, userRole }) {
       {/* Контейнер с горизонтальным скроллом для большого количества ботов */}
       <div className="relative">
         <div 
-          className="flex items-center gap-2 overflow-x-auto overflow-y-hidden pb-2 scrollbar-thin"
+          className="flex items-stretch gap-2 overflow-x-auto overflow-y-visible pb-3 pt-0.5 scrollbar-thin"
           style={{
             WebkitOverflowScrolling: 'touch'
           }}>
           {Array.isArray(tokens) && tokens.map((token) => (
             <div
               key={token.id}
-              className={`flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 rounded-lg border-2 flex-shrink-0 w-[calc(100vw-3rem)] sm:min-w-[220px] sm:max-w-[280px] transition-all ${
+              className={`flex h-full min-h-0 items-start gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-2.5 rounded-lg border flex-shrink-0 w-[calc(100vw-3rem)] sm:min-w-[260px] sm:max-w-[340px] overflow-visible transition-colors ${
                 selectedToken === token.id
-                  ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 dark:border-blue-500 shadow-md'
-                  : 'bg-gray-50 dark:bg-slate-800/60 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700/80 hover:border-gray-300 dark:hover:border-slate-600 cursor-pointer'
+                  ? 'border-slate-400 dark:border-slate-500 bg-slate-50 dark:bg-slate-700/50 shadow-sm ring-1 ring-slate-300/80 dark:ring-slate-600/80'
+                  : 'border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/60 hover:bg-gray-100 dark:hover:bg-slate-700/80 hover:border-gray-300 dark:hover:border-slate-600 cursor-pointer'
               }`}
               onClick={() => {
                 setSelectedToken(token.id);
               }}
             >
               {/* Аватар бота */}
-              <div className="flex-shrink-0 relative">
+              <div className="flex-shrink-0 self-start">
                 {token.avatarUrl ? (
                   <>
                     <img
@@ -279,41 +335,67 @@ function BotSelector({ onBotChange, userRole }) {
                   </div>
                 )}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{token.name}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col space-y-1">
+                <p className="text-sm font-medium leading-tight text-gray-900 dark:text-white break-words">
+                  {token.name}
+                </p>
+                <p
+                  className="truncate text-xs leading-tight text-gray-500 dark:text-gray-400"
+                  title={`@${token.username || 'неизвестно'}`}
+                >
                   @{token.username || 'неизвестно'}
-                  {token.isDefault && ' • По умолчанию'}
                 </p>
                 {token.owner && (
-                  <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                  <p className="text-xs leading-tight text-gray-400 dark:text-gray-500 break-words">
                     Владелец: {token.owner.name || token.owner.username}
                   </p>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleDeleteClick(token.id);
-                }}
-                disabled={userRole !== 'admin' && tokens.length === 1}
-                className={`flex-shrink-0 text-base px-2 py-1.5 rounded transition-colors ${
-                  (userRole !== 'admin' && tokens.length === 1)
-                    ? 'text-gray-400 cursor-not-allowed opacity-50'
-                    : 'text-red-600 hover:text-red-700 hover:bg-red-50 active:bg-red-100'
-                }`}
-                title={
-                  userRole === 'admin' 
-                    ? 'Удалить бота' 
-                    : tokens.length === 1 
-                      ? 'Нельзя удалить последнего бота' 
-                      : 'Удалить бота'
-                }
-              >
-                🗑️
-              </button>
+              <div className="flex w-[4.25rem] flex-shrink-0 flex-col items-end gap-1 pl-0.5">
+                <span className="flex-shrink-0">
+                  <BotOnlineBadge status={botStatuses[token.id]} loading={statusLoading} />
+                </span>
+                <div className="flex items-center gap-0.5">
+                  {userRole !== 'assistant' && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setReplaceTarget({ id: token.id, name: token.name });
+                        setReplaceTokenInput('');
+                      }}
+                      className="flex-shrink-0 rounded px-1.5 py-1 text-base transition-colors text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30"
+                      title="Сменить токен (каналы и история сохраняются)"
+                    >
+                      🔑
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleDeleteClick(token.id);
+                    }}
+                    disabled={userRole !== 'admin' && tokens.length === 1}
+                    className={`flex-shrink-0 rounded px-1.5 py-1 text-base transition-colors ${
+                      (userRole !== 'admin' && tokens.length === 1)
+                        ? 'cursor-not-allowed text-gray-400 opacity-50'
+                        : 'text-red-600 hover:bg-red-50 active:bg-red-100 dark:text-red-300 dark:hover:bg-white/10 dark:active:bg-white/[0.14]'
+                    }`}
+                    title={
+                      userRole === 'admin' 
+                        ? 'Удалить бота' 
+                        : tokens.length === 1 
+                          ? 'Нельзя удалить последнего бота' 
+                          : 'Удалить бота'
+                    }
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
             </div>
           ))}
         </div>
@@ -329,6 +411,52 @@ function BotSelector({ onBotChange, userRole }) {
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
           Используется бот: <span className="font-medium">{currentToken.name}</span>
         </p>
+      )}
+
+      {replaceTarget && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 dark:border dark:border-slate-700/50 rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <form onSubmit={handleReplaceTokenSubmit} className="p-4 sm:p-6">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                Сменить токен бота
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                <strong className="text-gray-900 dark:text-slate-200">{replaceTarget.name}</strong>
+                {' — вставьте новый токен из @BotFather. Каналы, история постов, шаблоны и расписание сохраняются. Меняется только секрет для доступа к API.'}
+              </p>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Новый токен
+              </label>
+              <input
+                type="password"
+                autoComplete="off"
+                value={replaceTokenInput}
+                onChange={(e) => setReplaceTokenInput(e.target.value)}
+                placeholder="123456789:ABC..."
+                className="w-full px-2 py-2 text-sm border border-gray-300 dark:border-slate-700 rounded bg-white dark:bg-slate-800/50 text-gray-900 dark:text-slate-100 mb-4 font-mono"
+              />
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  disabled={replaceSecret.isPending || !replaceTokenInput.trim()}
+                  className="flex-1 px-4 py-2 bg-amber-600 dark:bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {replaceSecret.isPending ? 'Сохранение...' : 'Сохранить'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReplaceTarget(null);
+                    setReplaceTokenInput('');
+                  }}
+                  className="flex-1 px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
+                >
+                  Отмена
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Модальное окно подтверждения удаления */}

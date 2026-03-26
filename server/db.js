@@ -391,6 +391,64 @@ export function deleteToken(token) {
   stmt.run(token);
 }
 
+/** Первые 8 символов md5 — как в index.js getTokenHashSync */
+export function getTokenHashFromSecret(tokenSecret) {
+  return crypto.createHash('md5').update(tokenSecret).digest('hex').substring(0, 8);
+}
+
+/** Обновить tokenHash во всех связанных таблицах (смена секрета бота без потери данных). */
+export function migrateTokenHashData(oldHash, newHash) {
+  if (oldHash === newHash) return;
+  const tables = [
+    'channels',
+    'posts_history',
+    'templates',
+    'scheduled_posts',
+    'recurring_posts',
+    'channel_groups',
+    'logs',
+  ];
+  for (const table of tables) {
+    db.prepare(`UPDATE ${table} SET tokenHash = ? WHERE tokenHash = ?`).run(newHash, oldHash);
+  }
+}
+
+/**
+ * Заменить секрет бота в таблице tokens и перенести все данные на новый tokenHash.
+ * Вызывать внутри одной транзакции с валидацией токена снаружи.
+ */
+export function replaceBotTokenSecret(oldTokenSecret, newTokenSecret, meta = {}) {
+  const oldHash = getTokenHashFromSecret(oldTokenSecret);
+  const newHash = getTokenHashFromSecret(newTokenSecret);
+  if (oldHash === newHash) {
+    throw new Error('Новый токен совпадает с текущим');
+  }
+  if (getTokenByToken(newTokenSecret)) {
+    throw new Error('Этот токен уже зарегистрирован у другого бота');
+  }
+  const row = getTokenByToken(oldTokenSecret);
+  if (!row) {
+    throw new Error('Токен не найден');
+  }
+  const trx = db.transaction(() => {
+    migrateTokenHashData(oldHash, newHash);
+    // URL файлов Telegram содержат старый секрет в пути — сбрасываем, подтянутся заново при includeAvatars
+    db.prepare('UPDATE channels SET avatarUrl = NULL WHERE tokenHash = ?').run(newHash);
+    deleteToken(oldTokenSecret);
+    createToken({
+      token: newTokenSecret,
+      name: meta.name !== undefined ? meta.name : row.name,
+      username: meta.username !== undefined ? meta.username : row.username,
+      userId: row.userId,
+      createdAt: row.createdAt,
+      isDefault: row.isDefault,
+      avatarUrl: meta.avatarUrl !== undefined ? meta.avatarUrl : row.avatarUrl,
+    });
+  });
+  trx();
+  return { oldHash, newHash };
+}
+
 // ========== CHANNELS ==========
 
 export function getChannels(tokenHash) {

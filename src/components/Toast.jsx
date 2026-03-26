@@ -18,8 +18,10 @@ function Toast({ message, type = 'info', onClose, duration = 3000 }) {
   };
 
   return (
-    <div className={`fixed top-4 right-4 ${bgColors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 flex items-center gap-3 min-w-[300px] max-w-[500px] animate-slide-in`}>
-      <span className="flex-1">{message}</span>
+    <div
+      className={`fixed top-4 right-4 ${bgColors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 flex items-start gap-3 min-w-[300px] max-w-[min(100vw-2rem,32rem)] max-h-[min(70vh,24rem)] overflow-y-auto animate-slide-in`}
+    >
+      <span className="flex-1 whitespace-pre-wrap break-words text-sm leading-snug">{message}</span>
       <button
         onClick={onClose}
         className="text-white hover:text-gray-200 font-bold text-lg leading-none"

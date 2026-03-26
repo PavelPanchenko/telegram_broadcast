@@ -4,7 +4,6 @@ import { useChannels } from './hooks/useChannels';
 import { useTokens } from './hooks/useTokens';
 import ChannelManager from './components/ChannelManager';
 import PostForm from './components/PostForm';
-import BotStatus from './components/BotStatus';
 import PostsHistory from './components/PostsHistory';
 import Templates from './components/Templates';
 import ScheduledPosts from './components/ScheduledPosts';
@@ -26,7 +25,7 @@ function App() {
   const [selectedToken, setSelectedToken] = useState(null);
   
   // Получаем токены напрямую из React Query
-  const { data: tokens = [], isLoading: tokensLoading } = useTokens();
+  const { data: tokens = [] } = useTokens();
   const queryClient = useQueryClient();
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('darkMode');
@@ -103,8 +102,11 @@ function App() {
     }
   };
 
-  // Используем React Query для каналов
-  const { data: channelsData = [], isLoading: channelsLoading } = useChannels(selectedToken, { includeAvatars: true });
+  // Аватары грузим только там, где они в UI (иначе N вызовов Telegram API подряд — сильные подвисания)
+  const channelsNeedAvatars = activeTab === 'post' || activeTab === 'channels';
+  const { data: channelsData = [], isLoading: channelsLoading } = useChannels(selectedToken, {
+    includeAvatars: channelsNeedAvatars,
+  });
   
   // Используем данные напрямую из React Query, не дублируем в state
   const channels = channelsData;
@@ -225,7 +227,6 @@ function App() {
         </div>
 
         <BotSelector onBotChange={handleBotChange} userRole={user?.role} />
-        <BotStatus token={selectedToken} hasTokens={tokens && tokens.length > 0} tokensLoading={tokensLoading} />
 
         {/* Навигация */}
         <div className="mb-4 sm:mb-6 border-b border-gray-200 dark:border-slate-700">

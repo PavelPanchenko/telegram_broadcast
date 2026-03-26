@@ -196,8 +196,18 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert('Ошибка при экспорте: ' + err.message);
+      toast.error('Ошибка при экспорте: ' + err.message);
     }
+  };
+
+  const formatImportErrors = (errors, maxLines = 24) => {
+    if (!errors?.length) return '';
+    const lines = errors.slice(0, maxLines);
+    let text = lines.join('\n');
+    if (errors.length > maxLines) {
+      text += `\n… и ещё ${errors.length - maxLines}`;
+    }
+    return text;
   };
 
   const handleImport = async () => {
@@ -215,15 +225,30 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
         throw new Error(result.error || 'Ошибка при импорте');
       }
 
-      alert(`Импортировано каналов: ${result.imported}`);
-      if (result.errors && result.errors.length > 0) {
+      if (result.errors?.length) {
         console.warn('Ошибки при импорте:', result.errors);
       }
+
+      const errText = formatImportErrors(result.errors);
+      if (result.imported > 0) {
+        toast.success(`Импортировано каналов: ${result.imported}`);
+        if (errText) {
+          toast.warning(
+            `Не для всех записей удалось подтвердить права бота:\n${errText}`,
+            18000
+          );
+        }
+      } else if (errText) {
+        toast.error(`Каналы не импортированы. Причины:\n${errText}`, 0);
+      } else {
+        toast.warning('Ни один канал не импортирован. Проверьте формат JSON и что в файле есть записи с полем id.');
+      }
+
       setImportData('');
       setShowImport(false);
       onChannelAdded();
     } catch (err) {
-      alert('Ошибка при импорте: ' + err.message);
+      toast.error('Ошибка при импорте: ' + err.message, 8000);
     }
   };
 

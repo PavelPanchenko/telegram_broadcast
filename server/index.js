@@ -17,6 +17,7 @@ import {
   getUsers, getUserById, getUserByUsername, createUser, updateUser, deleteUser,
   getTokens, getTokenByHash as dbGetTokenByHash, getTokenByToken, createToken, updateToken, deleteToken,
   getChannels, getChannelById, createChannel, updateChannel, deleteChannel,
+  replaceBotTokenSecret,
   getPostsHistory, addPostsHistory, deleteAllPostsHistory, deleteOldPostsHistory, markPostMessagesAsDeleted,
   getTemplates, createTemplate, deleteTemplate,
   getScheduledPosts, getScheduledPostById, createScheduledPost, updateScheduledPost, deleteScheduledPost,
@@ -24,6 +25,11 @@ import {
   getChannelGroups, createChannelGroup, updateChannelGroup, deleteChannelGroup,
   getLogs, addLog
 } from './db.js';
+import {
+  getChannelsListCache,
+  setChannelsListCache,
+  invalidateChannelsListCache,
+} from './channels-cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -218,6 +224,50 @@ function getBotFromRequest(req) {
   }
   
   return bots.get(token);
+}
+
+/** Как в POST /api/channels: username → @name, числовой id чата — как строка. */
+function normalizeTelegramChatIdForApi(rawId) {
+  if (rawId == null || rawId === '') return null;
+  let channelId = String(rawId).trim();
+  if (channelId.startsWith('@')) {
+    channelId = channelId.substring(1);
+  }
+  return channelId.startsWith('-') ? channelId : `@${channelId}`;
+}
+
+/**
+ * Проверка админ-прав: getChatMember или тестовое сообщение, если список участников недоступен.
+ * @param {object} options.rethrowUnexpected — если true, неизвестные ошибки getChatMember пробрасываются (как в POST /api/channels).
+ */
+async function verifyBotIsAdminInChat(bot, me, chatId, options = {}) {
+  const { rethrowUnexpected = false } = options;
+  try {
+    const chatMember = await bot.getChatMember(chatId, me.id);
+    if (chatMember.status === 'administrator' || chatMember.status === 'creator') {
+      return { ok: true };
+    }
+    return { ok: false, error: `Bot is not admin in ${chatId}` };
+  } catch (memberError) {
+    if (memberError.response?.body?.description?.includes('member list is inaccessible')) {
+      try {
+        const testMessage = await bot.sendMessage(chatId, '🔍', {
+          disable_notification: true,
+          disable_web_page_preview: true
+        });
+        try {
+          await bot.deleteMessage(chatId, testMessage.message_id);
+        } catch (_) {}
+        return { ok: true };
+      } catch (sendError) {
+        const errorDesc = sendError.response?.body?.description || sendError.message;
+        return { ok: false, error: `Cannot verify bot permissions: ${errorDesc}` };
+      }
+    }
+    if (rethrowUnexpected) throw memberError;
+    const msg = memberError.response?.body?.description || memberError.message || String(memberError);
+    return { ok: false, error: msg };
+  }
 }
 
 // Получить хэш токена из запроса
@@ -1101,11 +1151,83 @@ app.delete('/api/tokens/:id', requireAuth, (req, res) => {
     }
     bots.delete(token.token);
     logAction('token_deleted', { name: token.name, tokenHash }, id);
+    invalidateChannelsListCache(tokenHash);
     
     res.json({ success: true });
   } catch (error) {
     console.error('[API] Error in delete token:', error);
     res.status(500).json({ error: error.message || 'Failed to delete token' });
+  }
+});
+
+// Смена секрета бота без удаления каналов, истории и прочих данных
+app.put('/api/tokens/:id/secret', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newToken } = req.body;
+    const userId = req.session.user.id;
+    const users = getUsers();
+    const user = users.find(u => u.id === userId);
+
+    if (user?.role === 'assistant') {
+      return res.status(403).json({ error: 'Помощники не могут менять токен бота' });
+    }
+
+    if (!newToken || typeof newToken !== 'string' || !newToken.trim()) {
+      return res.status(400).json({ error: 'Укажите newToken' });
+    }
+
+    const tokens = getTokens();
+    const token = tokens.find(t => getTokenHashSync(t.token) === id);
+    if (!token) {
+      return res.status(404).json({ error: 'Бот не найден' });
+    }
+
+    const isAdmin = user?.role === 'admin';
+    if (!isAdmin) {
+      const userTokens = getUserTokens(userId);
+      if (!userTokens.find(t => getTokenHashSync(t.token) === id)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    const trimmed = newToken.trim();
+    if (trimmed === token.token) {
+      return res.status(400).json({ error: 'Указан тот же токен' });
+    }
+
+    const testBot = new TelegramBot(trimmed, { polling: false });
+    const me = await testBot.getMe();
+    const botInfo = await getBotInfo(trimmed);
+
+    const { oldHash, newHash } = replaceBotTokenSecret(token.token, trimmed, {
+      username: me.username || botInfo?.username || null,
+      avatarUrl: botInfo?.avatarUrl ?? null,
+    });
+
+    bots.delete(token.token);
+    bots.set(trimmed, testBot);
+
+    invalidateChannelsListCache(oldHash);
+    invalidateChannelsListCache(newHash);
+
+    logAction('token_secret_replaced', { oldHash, newHash, username: me.username }, newHash);
+
+    const t = getTokenByToken(trimmed);
+    res.json({
+      success: true,
+      token: {
+        id: newHash,
+        name: t.name,
+        username: t.username || null,
+        createdAt: t.createdAt,
+        isDefault: t.isDefault,
+        avatarUrl: t.avatarUrl || null,
+      },
+    });
+  } catch (error) {
+    console.error('[API] replace token secret:', error);
+    res.status(400).json({ error: error.message || 'Не удалось сменить токен' });
   }
 });
 
@@ -1154,8 +1276,15 @@ app.get('/api/channels', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Access denied' });
       }
     }
-    
+
+    const wantAvatars = req.query.includeAvatars === 'true';
     const bot = getBotFromRequest(req);
+    const effectiveAvatarQuery = wantAvatars && !!bot;
+    const cachedList = getChannelsListCache(tokenHash, effectiveAvatarQuery, userId);
+    if (cachedList !== undefined) {
+      return res.json(cachedList);
+    }
+
     const channels = getChannels(tokenHash);
     
     // Для админа получаем информацию о владельце бота
@@ -1181,6 +1310,14 @@ app.get('/api/channels', requireAuth, async (req, res) => {
     const channelsWithAvatars = [];
     for (let i = 0; i < channels.length; i++) {
       const channel = channels[i];
+      if (channel.avatarUrl) {
+        const channelData = { ...channel, avatarUrl: channel.avatarUrl };
+        if (user?.role === 'admin' && ownerInfo) {
+          channelData.owner = ownerInfo;
+        }
+        channelsWithAvatars.push(channelData);
+        continue;
+      }
       // Добавляем задержку между запросами (50ms)
       if (i > 0) {
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -1227,6 +1364,13 @@ app.get('/api/channels', requireAuth, async (req, res) => {
           ...channel,
           avatarUrl
         };
+        if (avatarUrl) {
+          try {
+            updateChannel(channel.id, { avatarUrl });
+          } catch (e) {
+            console.error(`[API] Failed to save avatarUrl for ${channel.id}:`, e.message);
+          }
+        }
         
         // Для админа добавляем информацию о владельце
         if (user?.role === 'admin' && ownerInfo) {
@@ -1248,6 +1392,7 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       }
     }
     
+      setChannelsListCache(tokenHash, true, userId, channelsWithAvatars);
       return res.json(channelsWithAvatars);
     }
     
@@ -1256,6 +1401,7 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       ? channels.map(channel => ({ ...channel, owner: ownerInfo }))
       : channels;
     
+    setChannelsListCache(tokenHash, false, userId, channelsWithOwner);
     res.json(channelsWithOwner);
   } catch (error) {
     console.error('[API] Error fetching channels:', error);
@@ -1293,11 +1439,16 @@ app.post('/api/channels/import', requireAuth, async (req, res) => {
 
     for (const channel of channels) {
       try {
-        const chatMember = await bot.getChatMember(channel.id, me.id);
-        if (chatMember.status === 'administrator' || chatMember.status === 'creator') {
+        const chatId = normalizeTelegramChatIdForApi(channel.id);
+        if (!chatId) {
+          errors.push(`Invalid channel id: ${channel?.id}`);
+          continue;
+        }
+        const { ok, error: verifyError } = await verifyBotIsAdminInChat(bot, me, chatId);
+        if (ok) {
           validChannels.push(channel);
         } else {
-          errors.push(`Bot is not admin in ${channel.id}`);
+          errors.push(`${channel.id}: ${verifyError}`);
         }
       } catch (error) {
         errors.push(`Error checking ${channel.id}: ${error.message}`);
@@ -1317,6 +1468,7 @@ app.post('/api/channels/import', requireAuth, async (req, res) => {
       }
     }
     logAction('channels_imported', { count: validChannels.length, errors }, tokenHash);
+    invalidateChannelsListCache(tokenHash);
 
     res.json({ success: true, imported: validChannels.length, errors });
   } catch (error) {
@@ -1450,59 +1602,26 @@ app.post('/api/channels', requireAuth, async (req, res) => {
 
   try {
     const me = await bot.getMe();
-    // Если channelId начинается с цифры или минуса, используем как есть, иначе добавляем @
-    const chatId = channelId.startsWith('-') ? channelId : `@${channelId}`;
-    
-    const chat = await bot.getChat(chatId);
-    
-    // Пробуем проверить права бота
-    let isAdmin = false;
-    try {
-      const chatMember = await bot.getChatMember(chatId, me.id);
-      isAdmin = chatMember.status === 'administrator' || chatMember.status === 'creator';
-    } catch (memberError) {
-      // Если список участников недоступен, пробуем проверить права через тестовую отправку
-      if (memberError.response?.body?.description?.includes('member list is inaccessible')) {
-        console.log(`[API] Member list inaccessible for ${chatId}, trying test message to verify permissions`);
-        try {
-          // Пробуем отправить тестовое сообщение (которое сразу удалим)
-          // Это реальная проверка прав бота
-          const testMessage = await bot.sendMessage(chatId, '🔍', { 
-            disable_notification: true,
-            disable_web_page_preview: true
-          });
-          
-          // Если сообщение отправлено успешно, удаляем его
-          try {
-            await bot.deleteMessage(chatId, testMessage.message_id);
-            console.log(`[API] Test message sent and deleted successfully for ${chatId}`);
-            isAdmin = true; // Бот может отправлять сообщения, значит имеет права
-          } catch (deleteError) {
-            // Если не удалось удалить, но сообщение отправлено - все равно считаем успехом
-            console.log(`[API] Test message sent but could not be deleted for ${chatId}:`, deleteError.message);
-            isAdmin = true;
-          }
-        } catch (sendError) {
-          // Если не удалось отправить сообщение, бот не имеет прав
-          console.error(`[API] Cannot send test message to ${chatId}:`, sendError.message);
-          const errorDesc = sendError.response?.body?.description || sendError.message;
-          if (errorDesc.includes('not a member') || errorDesc.includes('chat not found')) {
-            return res.status(403).json({ 
-              error: 'Bot is not a member of the channel. Please add the bot as an administrator first.' 
-            });
-          }
-          return res.status(403).json({ 
-            error: `Cannot verify bot permissions: ${errorDesc}` 
-          });
-        }
-      } else {
-        // Другие ошибки пробрасываем дальше
-        throw memberError;
-      }
+    const chatId = normalizeTelegramChatIdForApi(channelId);
+    if (!chatId) {
+      return res.status(400).json({ error: 'Invalid channel ID' });
     }
-    
+
+    const chat = await bot.getChat(chatId);
+
+    const { ok: isAdmin, error: verifyError } = await verifyBotIsAdminInChat(bot, me, chatId, {
+      rethrowUnexpected: true
+    });
     if (!isAdmin) {
-      return res.status(403).json({ error: 'Bot must be an administrator of the channel' });
+      const errorDesc = verifyError || '';
+      if (errorDesc.includes('not a member') || errorDesc.includes('chat not found')) {
+        return res.status(403).json({
+          error: 'Bot is not a member of the channel. Please add the bot as an administrator first.'
+        });
+      }
+      return res.status(403).json({
+        error: verifyError || 'Bot must be an administrator of the channel'
+      });
     }
 
     // Если название не указано, берем из чата
@@ -1525,6 +1644,7 @@ app.post('/api/channels', requireAuth, async (req, res) => {
       createdAt: new Date().toISOString()
     });
     logAction('channel_added', { channelId, channelName: finalChannelName }, tokenHash);
+    invalidateChannelsListCache(tokenHash);
 
     res.json({ success: true, channels });
   } catch (error) {
@@ -1549,6 +1669,7 @@ app.put('/api/channels/:channelId', requireAuth, (req, res) => {
     updateChannel(channelId, { name, tags });
   }
   logAction('channel_updated', { channelId }, tokenHash);
+  invalidateChannelsListCache(tokenHash);
   res.json({ success: true, channel: channels[index] });
 });
 
@@ -1565,6 +1686,7 @@ app.delete('/api/channels/:channelId', requireAuth, (req, res) => {
 
   deleteChannel(decodedChannelId);
   logAction('channel_deleted', { channelId: decodedChannelId }, tokenHash);
+  invalidateChannelsListCache(tokenHash);
   
   // Чистим ссылку на канал из групп/запланированных/повторяющихся постов,
   // чтобы он не "подтягивался" обратно и не ломал отправку
@@ -2421,6 +2543,33 @@ app.get('/api/bot-status', requireAuth, async (req, res) => {
     res.json({ initialized: true, username: me.username });
   } catch (error) {
     res.json({ initialized: false, error: error.message });
+  }
+});
+
+// Статус всех доступных ботов (для бейджей в UI, без раскрытия секретов)
+app.get('/api/bots-status', requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.user.id;
+    const tokensToCheck = getUserTokens(userId);
+    const statuses = {};
+
+    await Promise.all(
+      tokensToCheck.map(async (t) => {
+        const id = getTokenHashSync(t.token);
+        try {
+          const bot = new TelegramBot(t.token, { polling: false });
+          const me = await bot.getMe();
+          statuses[id] = { online: true, username: me.username || null };
+        } catch (error) {
+          statuses[id] = { online: false };
+        }
+      })
+    );
+
+    res.json(statuses);
+  } catch (error) {
+    console.error('[API] /api/bots-status:', error);
+    res.status(500).json({ error: error.message || 'Failed to load bot statuses' });
   }
 });
 

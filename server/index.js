@@ -207,6 +207,9 @@ function resolveTokenForFileUrl(req) {
 
 const AVATAR_FETCH_CONCURRENCY = 4;
 
+/** Параллельная проверка прав при импорте (узкое место — Telegram API, не БД) */
+const IMPORT_VERIFY_CONCURRENCY = 4;
+
 async function fetchChannelAvatarRow(channel, bot, fileToken, user, ownerInfo) {
   try {
     const chat = await bot.getChat(channel.id);
@@ -1461,22 +1464,33 @@ app.post('/api/channels/import', requireAuth, async (req, res) => {
     const validChannels = [];
     const errors = [];
 
-    for (const channel of channels) {
-      try {
-        const chatId = normalizeTelegramChatIdForApi(channel.id);
-        if (!chatId) {
-          errors.push(`Invalid channel id: ${channel?.id}`);
-          continue;
+    const n = channels.length;
+    if (n > 0) {
+      let wi = 0;
+      const workerCount = Math.min(IMPORT_VERIFY_CONCURRENCY, n);
+      async function importVerifyWorker() {
+        while (true) {
+          const slot = wi++;
+          if (slot >= n) return;
+          const channel = channels[slot];
+          try {
+            const chatId = normalizeTelegramChatIdForApi(channel.id);
+            if (!chatId) {
+              errors.push(`Invalid channel id: ${channel?.id}`);
+              continue;
+            }
+            const { ok, error: verifyError } = await verifyBotIsAdminInChat(bot, me, chatId);
+            if (ok) {
+              validChannels.push(channel);
+            } else {
+              errors.push(`${channel.id}: ${verifyError}`);
+            }
+          } catch (error) {
+            errors.push(`Error checking ${channel.id}: ${error.message}`);
+          }
         }
-        const { ok, error: verifyError } = await verifyBotIsAdminInChat(bot, me, chatId);
-        if (ok) {
-          validChannels.push(channel);
-        } else {
-          errors.push(`${channel.id}: ${verifyError}`);
-        }
-      } catch (error) {
-        errors.push(`Error checking ${channel.id}: ${error.message}`);
       }
+      await Promise.all(Array.from({ length: workerCount }, () => importVerifyWorker()));
     }
 
     const existingChannels = getChannels(tokenHash);

@@ -21,6 +21,7 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
   const [selectedTag, setSelectedTag] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [importData, setImportData] = useState('');
+  const [importing, setImporting] = useState(false);
   const [fetchingName, setFetchingName] = useState(false);
   const [activeSection, setActiveSection] = useState('channels'); // 'channels' или 'groups'
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -213,6 +214,12 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
   const handleImport = async () => {
     try {
       const data = JSON.parse(importData);
+      if (!Array.isArray(data)) {
+        toast.error('Ожидается JSON-массив каналов');
+        return;
+      }
+      setImporting(true);
+
       const response = await fetch('/api/channels/import', {
         method: 'POST',
         headers: getHeaders(),
@@ -249,6 +256,8 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
       onChannelAdded();
     } catch (err) {
       toast.error('Ошибка при импорте: ' + err.message, 8000);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -350,24 +359,40 @@ function ChannelManager({ channels, onChannelAdded, onChannelDeleted, loading, t
               rows={4}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
+                type="button"
                 onClick={handleImport}
-                disabled={!importData}
-                className="px-3 py-1 text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
+                disabled={!importData || importing}
+                className="inline-flex items-center gap-2 px-3 py-1 text-sm bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Импортировать
+                {importing && (
+                  <span
+                    className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"
+                    aria-hidden
+                  />
+                )}
+                {importing ? 'Проверка в Telegram…' : 'Импортировать'}
               </button>
               <button
+                type="button"
                 onClick={() => {
+                  if (importing) return;
                   setShowImport(false);
                   setImportData('');
                 }}
-                className="px-3 py-1 text-sm bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500"
+                disabled={importing}
+                className="px-3 py-1 text-sm bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500 disabled:opacity-50"
               >
                 Отмена
               </button>
             </div>
+            {importing && (
+              <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                Идёт проверка прав бота для каждого канала через Telegram API (до 4 каналов параллельно).
+                Запись в базу занимает доли секунды — долго ждём именно ответы Telegram.
+              </p>
+            )}
           </div>
         </div>
       )}

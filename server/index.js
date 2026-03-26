@@ -110,6 +110,11 @@ const loginLimiter = rateLimit({
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/', limiter);
 
+/** Готовность API для wait-on при dev (фронт стартует после сервера) */
+app.get('/health', (req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 // Настройка multer для загрузки файлов
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {

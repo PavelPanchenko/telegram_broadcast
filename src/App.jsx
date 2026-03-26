@@ -15,6 +15,7 @@ import Login from './components/Login';
 import UserManagement from './components/UserManagement';
 import ToastContainer from './components/ToastContainer';
 import ThemeToggle from './components/ThemeToggle';
+import AuthLoadingSkeleton from './components/AuthLoadingSkeleton';
 import { parseJsonResponse } from './utils/api';
 
 function App() {
@@ -180,11 +181,7 @@ function App() {
   };
 
   if (checkingAuth) {
-    return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <p className="text-gray-600 dark:text-gray-400">Проверка авторизации...</p>
-      </div>
-    );
+    return <AuthLoadingSkeleton />;
   }
 
   if (!user) {

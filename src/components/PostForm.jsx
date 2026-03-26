@@ -3,7 +3,7 @@ import { toast } from '../utils/toast';
 import { parseJsonResponse } from '../utils/api';
 import { useTemplates } from '../hooks/useTemplates';
 
-function PostForm({ channels, token }) {
+function PostForm({ channels, token, channelsLoading = false }) {
   const [text, setText] = useState('');
   const [selectedChannels, setSelectedChannels] = useState([]);
   const [files, setFiles] = useState([]);
@@ -397,6 +397,12 @@ function PostForm({ channels, token }) {
       <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-3 sm:mb-4">
         Создать пост
       </h2>
+
+      {token && channelsLoading && (
+        <p className="mb-3 text-sm text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md px-3 py-2">
+          Загрузка списка каналов…
+        </p>
+      )}
 
       <form onSubmit={handleSubmit}>
         <div className="mb-4">

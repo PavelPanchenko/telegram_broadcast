@@ -328,7 +328,8 @@ npm run migrate
   docker compose up -d --build
   ```
 - **Просмотр логов:** `docker compose logs -f`
-- **Очистка старых образов:** `docker system prune -a`
+- **Очистка старых образов:** `docker image prune` (только неиспользуемые образы без тегов).
+  Не используйте `docker system prune -a`: на сервере работает ещё и GateGram, команда затрагивает все проекты.
 
 **Важные замечания:**
 
@@ -441,6 +442,40 @@ CORS_ORIGIN=https://your-frontend.vercel.app
 ```
 
 **Примечание:** `TELEGRAM_BOT_TOKEN` больше не требуется. Боты добавляются через веб-интерфейс.
+
+## Бэкапы
+
+Скрипт `scripts/backup.sh` собирает в один архив базу SQLite (`server/data/database.db`), папку `uploads/` и `.env`.
+Пока контейнер работает, база копируется онлайн-бэкапом SQLite — копия целостная даже во время записи;
+затем проверяется `integrity_check`. Скрипт хранит последние `BACKUP_KEEP` архивов и (опционально) шифрует их
+паролем и выгружает в облако через rclone.
+
+### Настройка на сервере
+
+```bash
+cd /путь/к/telegram_broadcast
+cp scripts/backup.conf.example scripts/backup.conf   # поправить пути
+scripts/backup.sh                                     # первый запуск вручную
+```
+
+Можно использовать тот же файл пароля и тот же rclone remote, что и для GateGram (другая папка в облаке).
+Без пароля зашифрованный архив не открыть — храните его ещё где-нибудь вне сервера.
+
+**Каждую ночь** (`crontab -e`), через 10 минут после бэкапа GateGram:
+
+```
+27 3 * * * /путь/к/telegram_broadcast/scripts/backup.sh >> /var/log/telegram-broadcast-backup.log 2>&1
+```
+
+### Восстановление / переезд на новый сервер
+
+```bash
+git clone https://github.com/PavelPanchenko/telegram_broadcast.git && cd telegram_broadcast
+BACKUP_PASSPHRASE_FILE=/путь/к/файлу_с_паролем scripts/restore.sh /путь/к/telegram_broadcast_ДАТА.tar.gz.gpg
+```
+
+`restore.sh` останавливает контейнер, заменяет базу (старую сохраняет как `database.db.before-restore-…`) и `uploads/`,
+берёт `.env` из архива, если в папке его ещё нет, и запускает контейнер заново.
 
 ## Безопасность
 

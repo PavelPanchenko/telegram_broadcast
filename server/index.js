@@ -37,6 +37,12 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 
 const app = express();
+
+// За reverse proxy (Caddy) все запросы приходят с его IP — без этого rate limit был бы общим на всех пользователей,
+// а secure-cookie не работали бы при HTTPS. Включается переменной TRUST_PROXY (в docker-compose.yml).
+if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', 1);
+}
 const PORT = process.env.PORT || 5001;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 МБ
 const MAX_IMAGES = 10;

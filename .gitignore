@@ -11,3 +11,6 @@ server/data/
 # Игнорируем БД в директории data
 server/data/database.db
 
+
+# Настройки бэкапа
+scripts/backup.conf

@@ -1,0 +1,11 @@
+# Скопируйте в scripts/backup.conf и поправьте под себя (backup.conf не попадает в git).
+
+BACKUP_DIR=/root/backups/telegram_broadcast
+BACKUP_KEEP=7
+
+# Можно использовать тот же файл пароля и тот же rclone remote, что и для GateGram
+BACKUP_PASSPHRASE_FILE=/root/.gategram-backup-pass
+
+RCLONE_REMOTE=
+# RCLONE_REMOTE=yandex:telegram-broadcast-backups
+RCLONE_KEEP_DAYS=30

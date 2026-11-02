@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: telegram-broadcast
     restart: unless-stopped
-    ports:
-      - "5001:5001"
+    # Порт наружу не публикуем: снаружи приложение доступно через Caddy из проекта GateGram
+    # (http://IP:5001 или домен из BROADCAST_ADDRESS), Caddy ходит сюда по сети vps-edge.
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - PORT=5001
@@ -17,6 +17,8 @@ services:
       # Для работы с HTTP (без HTTPS) установите COOKIE_SECURE=false
       # Для HTTPS установите COOKIE_SECURE=true
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      # Приложение за reverse proxy (Caddy): брать IP клиента из X-Forwarded-For для rate limit
+      - TRUST_PROXY=1
     volumes:
       # Монтируем директорию с данными для сохранения между перезапусками
       # БД теперь хранится в server/data/database.db
@@ -24,8 +26,13 @@ services:
       - ./uploads:/app/uploads
     networks:
       - telegram-broadcast-network
+      - edge
 
 networks:
   telegram-broadcast-network:
     driver: bridge
+  # Общая сеть с Caddy из проекта GateGram (создаётся там) — сначала должен быть запущен GateGram
+  edge:
+    name: vps-edge
+    external: true
 

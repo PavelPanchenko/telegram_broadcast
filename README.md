@@ -331,6 +331,15 @@ npm run migrate
 - **Очистка старых образов:** `docker image prune` (только неиспользуемые образы без тегов).
   Не используйте `docker system prune -a`: на сервере работает ещё и GateGram, команда затрагивает все проекты.
 
+**Работа за Caddy (на одном сервере с GateGram):**
+
+- Контейнер не публикует порт 5001 наружу. Снаружи его обслуживает Caddy из проекта GateGram
+  (http://IP:5001, или домен через `BROADCAST_ADDRESS` в `.env` GateGram — тогда с HTTPS).
+- Caddy достаёт контейнер по общей Docker-сети `vps-edge`, которую создаёт GateGram. Поэтому
+  GateGram нужно запустить первым (`docker compose up -d` в его папке), иначе будет ошибка
+  `network vps-edge declared as external, but could not be found`.
+- `TRUST_PROXY=1` (в `docker-compose.yml`) — чтобы rate limit считался по IP клиентов, а не по IP Caddy.
+
 **Важные замечания:**
 
 - Данные сохраняются в `./server/data` и `./uploads` на хосте благодаря volume монтированию
